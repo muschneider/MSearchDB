@@ -112,6 +112,7 @@ secrets.toml
 secrets.yaml
 secrets.yml
 secrets.json
+mise.toml
 
 # =============================================================================
 # Protocol Buffers (if using prost or tonic)
