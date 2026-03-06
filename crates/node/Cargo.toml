@@ -1,0 +1,38 @@
+[package]
+name = "msearchdb-node"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MSearchDB database node binary"
+
+[lib]
+name = "msearchdb_node"
+path = "src/lib.rs"
+
+[[bin]]
+name = "msearchdb"
+path = "src/main.rs"
+
+[dependencies]
+msearchdb-core = { workspace = true }
+msearchdb-storage = { workspace = true }
+msearchdb-index = { workspace = true }
+msearchdb-consensus = { workspace = true }
+msearchdb-network = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+http = { workspace = true }
+hyper = { workspace = true }
+uuid = { workspace = true }
+async-trait = { workspace = true }
+openraft = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

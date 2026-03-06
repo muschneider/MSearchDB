@@ -1,0 +1,170 @@
+# =============================================================================
+# Rust Build Artifacts
+# =============================================================================
+
+# Build output directory
+target/
+
+# Cargo lock file (for libraries; include for binaries)
+# Cargo.lock
+
+# =============================================================================
+# Rust Tooling
+# =============================================================================
+
+# Clippy and rustfmt backup files
+*.rs.bk
+*.rs.orig
+
+# Rust analyzer
+.rust-analyzer/
+
+# Cargo audit
+.cargo/audit.toml
+
+# =============================================================================
+# IDEs and Editors
+# =============================================================================
+
+# IntelliJ / CLion / RustRover
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# Vim / Neovim
+*.swp
+*.swo
+*~
+.netrwhist
+
+# Emacs
+*~
+.#*
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# =============================================================================
+# Operating System Files
+# =============================================================================
+
+# macOS
+.DS_Store
+.DS_Store?
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+Icon?
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msm
+*.msp
+
+# Linux
+*~
+.nfs*
+
+# =============================================================================
+# Logs and Databases
+# =============================================================================
+
+*.log
+*.log.*
+*.sql
+*.sqlite
+*.sqlite3
+*.db
+
+# =============================================================================
+# Environment and Secrets
+# =============================================================================
+
+.env
+.env.local
+.env.*.local
+.env.development
+.env.test
+.env.production
+*.env
+
+# Secrets
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+secrets.toml
+secrets.yaml
+secrets.yml
+secrets.json
+
+# =============================================================================
+# Protocol Buffers (if using prost or tonic)
+# =============================================================================
+
+# Generated protobuf files (if committed, remove this)
+# *.pb.rs
+
+# =============================================================================
+# Testing and Coverage
+# =============================================================================
+
+# Test output
+test_output/
+test_results/
+
+# Coverage
+coverage/
+*.profraw
+*.profdata
+
+# tarpaulin
+tarpaulin-report.html
+
+# =============================================================================
+# Documentation
+# =============================================================================
+
+# rustdoc output
+doc/
+
+# mdBook
+book/
+
+# =============================================================================
+# Project Specific
+# =============================================================================
+
+# Node modules (if using any JS tooling)
+node_modules/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Backup files
+*.bak
+*.backup
+
+# Mise local configuration
+.mise.local.toml
+
+# Project-specific documentation
+AGENTS.md
+prompts.txt

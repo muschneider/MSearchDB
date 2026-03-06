@@ -1,0 +1,183 @@
+syntax = "proto3";
+
+package msearchdb;
+
+// ---------------------------------------------------------------------------
+// NodeService — inter-node Raft and cluster management RPCs
+// ---------------------------------------------------------------------------
+
+service NodeService {
+  // Raft log replication: leader sends log entries to followers.
+  rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse);
+
+  // Raft leader election: candidate requests votes from peers.
+  rpc RequestVote(VoteRequest) returns (VoteResponse);
+
+  // Raft snapshot transfer: leader streams snapshot chunks to a follower.
+  rpc InstallSnapshot(stream SnapshotChunk) returns (InstallSnapshotResponse);
+
+  // Forward a write to the current leader when received by a follower.
+  rpc ForwardWrite(WriteRequest) returns (WriteResponse);
+
+  // Health check: return node status, leader info, and metrics.
+  rpc HealthCheck(HealthRequest) returns (HealthResponse);
+
+  // Cluster membership: request to join as a learner node.
+  rpc JoinCluster(JoinRequest) returns (JoinResponse);
+}
+
+// ---------------------------------------------------------------------------
+// QueryService — distributed search and document retrieval RPCs
+// ---------------------------------------------------------------------------
+
+service QueryService {
+  // Execute a search query on the local node.
+  rpc Search(SearchRequest) returns (SearchResponse);
+
+  // Retrieve a single document by id from the local node.
+  rpc Get(GetRequest) returns (GetResponse);
+
+  // Scatter-gather: stream partial results back for aggregation.
+  rpc Scatter(ScatterRequest) returns (stream ScatterResult);
+}
+
+// ---------------------------------------------------------------------------
+// Raft messages
+// ---------------------------------------------------------------------------
+
+message AppendEntriesRequest {
+  // Serialised openraft AppendEntriesRequest (JSON or msgpack).
+  bytes payload = 1;
+}
+
+message AppendEntriesResponse {
+  // Serialised openraft AppendEntriesResponse.
+  bytes payload = 1;
+}
+
+message VoteRequest {
+  // Serialised openraft VoteRequest.
+  bytes payload = 1;
+}
+
+message VoteResponse {
+  // Serialised openraft VoteResponse.
+  bytes payload = 1;
+}
+
+message SnapshotChunk {
+  // Byte offset within the full snapshot.
+  uint64 offset = 1;
+  // The chunk data.
+  bytes data = 2;
+  // True if this is the last chunk.
+  bool done = 3;
+  // Serialised snapshot metadata (only sent with first chunk).
+  bytes metadata = 4;
+}
+
+message InstallSnapshotResponse {
+  // Serialised openraft InstallSnapshotResponse.
+  bytes payload = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Write forwarding
+// ---------------------------------------------------------------------------
+
+message WriteRequest {
+  // Serialised RaftCommand (JSON).
+  bytes command = 1;
+}
+
+message WriteResponse {
+  bool success = 1;
+  // The affected document id, if any.
+  string document_id = 2;
+  // Error message, if the write failed.
+  string error = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Health check
+// ---------------------------------------------------------------------------
+
+message HealthRequest {
+  // Currently empty; reserved for future fields.
+}
+
+message HealthResponse {
+  uint64 node_id = 1;
+  // "Leader", "Follower", "Candidate", "Offline"
+  string status = 2;
+  // Node id of the current leader (0 if unknown).
+  uint64 leader_id = 3;
+  // Current Raft term.
+  uint64 current_term = 4;
+  // Last applied log index.
+  uint64 last_applied = 5;
+  bool is_healthy = 6;
+}
+
+// ---------------------------------------------------------------------------
+// Join cluster
+// ---------------------------------------------------------------------------
+
+message JoinRequest {
+  uint64 node_id = 1;
+  string address = 2;
+}
+
+message JoinResponse {
+  bool success = 1;
+  string error = 2;
+  uint64 leader_id = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Search
+// ---------------------------------------------------------------------------
+
+message SearchRequest {
+  // Serialised Query (JSON).
+  bytes query = 1;
+  uint32 limit = 2;
+}
+
+message SearchResponse {
+  // Serialised SearchResult (JSON) containing scored documents.
+  bytes result = 1;
+  string error = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Get
+// ---------------------------------------------------------------------------
+
+message GetRequest {
+  string document_id = 1;
+}
+
+message GetResponse {
+  // Serialised Document (JSON) — empty if not found.
+  bytes document = 1;
+  bool found = 2;
+  string error = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Scatter-gather
+// ---------------------------------------------------------------------------
+
+message ScatterRequest {
+  // Serialised Query (JSON).
+  bytes query = 1;
+  uint32 limit = 2;
+}
+
+message ScatterResult {
+  // Serialised ScoredDocument (JSON).
+  bytes scored_document = 1;
+  // The originating node id.
+  uint64 node_id = 2;
+}

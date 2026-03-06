@@ -1,0 +1,35 @@
+//! # msearchdb-core
+//!
+//! Core domain types and trait abstractions for MSearchDB, a distributed
+//! NoSQL database with full-text search capabilities.
+//!
+//! This crate is the foundation of the MSearchDB workspace. It defines:
+//!
+//! - **Document model** ([`document`]): The primary data unit with typed field values.
+//! - **Error types** ([`error`]): Ergonomic error handling via `thiserror`.
+//! - **Query DSL** ([`query`]): Full-text, term, range, and boolean queries.
+//! - **Cluster types** ([`cluster`]): Node identity, addressing, and cluster state.
+//! - **Configuration** ([`config`]): Node configuration with TOML loading support.
+//! - **Trait abstractions** ([`traits`]): Async interfaces for storage, indexing,
+//!   replication, and health checking.
+//!
+//! # Design Principles
+//!
+//! - **Newtype pattern** for type safety (`DocumentId`, `NodeId`)
+//! - **`#[non_exhaustive]`** on public enums for forward compatibility
+//! - **Trait-based abstraction** over concrete implementations
+//! - **Zero-cost serde** via derive macros
+
+pub mod cluster;
+pub mod config;
+pub mod document;
+pub mod error;
+pub mod query;
+pub mod traits;
+
+// Re-export the most commonly used types at crate root for ergonomics.
+pub use cluster::{ClusterState, NodeId, NodeInfo, NodeStatus};
+pub use config::NodeConfig;
+pub use document::{Document, DocumentId, FieldValue};
+pub use error::{DbError, DbResult};
+pub use query::{Query, SearchResult};
