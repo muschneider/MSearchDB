@@ -12,6 +12,9 @@
 //! - **Configuration** ([`config`]): Node configuration with TOML loading support.
 //! - **Trait abstractions** ([`traits`]): Async interfaces for storage, indexing,
 //!   replication, and health checking.
+//! - **Consistent hashing** ([`consistent_hash`]): SHA-256 ring with virtual nodes.
+//! - **Cluster routing** ([`cluster_router`]): Document placement and query fan-out.
+//! - **Rebalancing** ([`rebalancer`]): Data migration plans for topology changes.
 //!
 //! # Design Principles
 //!
@@ -21,15 +24,21 @@
 //! - **Zero-cost serde** via derive macros
 
 pub mod cluster;
+pub mod cluster_router;
 pub mod config;
+pub mod consistent_hash;
 pub mod document;
 pub mod error;
 pub mod query;
+pub mod rebalancer;
 pub mod traits;
 
 // Re-export the most commonly used types at crate root for ergonomics.
 pub use cluster::{ClusterState, NodeId, NodeInfo, NodeStatus};
+pub use cluster_router::ClusterRouter;
 pub use config::NodeConfig;
+pub use consistent_hash::ConsistentHashRing;
 pub use document::{Document, DocumentId, FieldValue};
 pub use error::{DbError, DbResult};
 pub use query::{Query, SearchResult};
+pub use rebalancer::{DataMove, RebalancePlan, RebalanceStatus};

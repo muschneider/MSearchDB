@@ -12,6 +12,7 @@ toml = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
+sha2 = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
 
