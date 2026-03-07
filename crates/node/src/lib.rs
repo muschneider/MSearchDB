@@ -42,6 +42,7 @@
 //! - **tower middleware composition** for cross-cutting concerns.
 //! - **`From` impls** between API DTOs and domain types for clean conversion.
 
+pub mod cluster_manager;
 pub mod dto;
 pub mod errors;
 pub mod handlers;

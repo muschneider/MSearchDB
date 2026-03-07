@@ -33,6 +33,7 @@ hyper = { workspace = true }
 uuid = { workspace = true }
 async-trait = { workspace = true }
 openraft = { workspace = true }
+dashmap = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
