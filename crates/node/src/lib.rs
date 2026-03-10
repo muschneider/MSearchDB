@@ -46,11 +46,16 @@ pub mod cluster_manager;
 pub mod dto;
 pub mod errors;
 pub mod handlers;
+pub mod metrics;
 pub mod middleware;
+pub mod observability;
 pub mod state;
 
 use std::time::Duration;
 
+use axum::extract::State;
+use axum::http::{header, StatusCode};
+use axum::response::IntoResponse;
 use axum::routing::{get, post, put};
 use axum::Router;
 use tower_http::compression::CompressionLayer;
@@ -119,7 +124,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/_nodes", get(handlers::cluster::list_nodes))
         .route("/_nodes/:id/_join", post(handlers::cluster::join_node));
 
-    let admin_routes = Router::new().route("/_stats", get(handlers::admin::get_stats));
+    let admin_routes = Router::new()
+        .route("/_stats", get(handlers::admin::get_stats))
+        .route("/metrics", get(metrics_handler));
 
     // Merge all route groups
     let app = Router::new()
@@ -137,4 +144,21 @@ pub fn build_router(state: AppState) -> Router {
         ))
         .layer(CompressionLayer::new())
         .layer(TimeoutLayer::new(Duration::from_secs(30)))
+}
+
+// ---------------------------------------------------------------------------
+// Metrics handler
+// ---------------------------------------------------------------------------
+
+/// Handler for `GET /metrics` — returns Prometheus text format.
+async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let body = state.metrics.gather();
+    (
+        StatusCode::OK,
+        [(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
+    )
 }

@@ -117,6 +117,7 @@ async fn make_test_state() -> AppState {
         connection_pool: Arc::new(ConnectionPool::new()),
         collections: Arc::new(RwLock::new(HashMap::new())),
         api_key: None,
+        metrics: Arc::new(msearchdb_node::metrics::Metrics::new()),
     }
 }
 

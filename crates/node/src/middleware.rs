@@ -286,6 +286,7 @@ mod tests {
             connection_pool: Arc::new(ConnectionPool::new()),
             collections: Arc::new(RwLock::new(HashMap::new())),
             api_key,
+            metrics: Arc::new(crate::metrics::Metrics::new()),
         }
     }
 

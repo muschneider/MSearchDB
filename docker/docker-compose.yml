@@ -1,0 +1,113 @@
+# MSearchDB 3-node cluster
+#
+# Usage:
+#   docker compose -f docker/docker-compose.yml up --build
+#
+# Node 1 bootstraps the cluster. Nodes 2 and 3 join via --peers.
+#
+# Endpoints:
+#   node1: http://localhost:9201  (gRPC: 9301)
+#   node2: http://localhost:9202  (gRPC: 9302)
+#   node3: http://localhost:9203  (gRPC: 9303)
+
+services:
+  node1:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: msearchdb-node1
+    hostname: node1
+    command:
+      - "--config"
+      - "/etc/msearchdb/node.toml"
+      - "--node-id"
+      - "1"
+      - "--http-port"
+      - "9200"
+      - "--grpc-port"
+      - "9300"
+      - "--bootstrap"
+      - "--json-log"
+    ports:
+      - "9201:9200"
+      - "9301:9300"
+      - "9101:9100"
+    volumes:
+      - node1-data:/var/lib/msearchdb
+    networks:
+      - msearchdb-net
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9200/_cluster/health"]
+      interval: 10s
+      timeout: 3s
+      start_period: 15s
+      retries: 3
+
+  node2:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: msearchdb-node2
+    hostname: node2
+    command:
+      - "--config"
+      - "/etc/msearchdb/node.toml"
+      - "--node-id"
+      - "2"
+      - "--http-port"
+      - "9200"
+      - "--grpc-port"
+      - "9300"
+      - "--peers"
+      - "node1:9300"
+      - "--json-log"
+    ports:
+      - "9202:9200"
+      - "9302:9300"
+      - "9102:9100"
+    volumes:
+      - node2-data:/var/lib/msearchdb
+    networks:
+      - msearchdb-net
+    depends_on:
+      node1:
+        condition: service_healthy
+
+  node3:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: msearchdb-node3
+    hostname: node3
+    command:
+      - "--config"
+      - "/etc/msearchdb/node.toml"
+      - "--node-id"
+      - "3"
+      - "--http-port"
+      - "9200"
+      - "--grpc-port"
+      - "9300"
+      - "--peers"
+      - "node1:9300"
+      - "--json-log"
+    ports:
+      - "9203:9200"
+      - "9303:9300"
+      - "9103:9100"
+    volumes:
+      - node3-data:/var/lib/msearchdb
+    networks:
+      - msearchdb-net
+    depends_on:
+      node1:
+        condition: service_healthy
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:
+
+networks:
+  msearchdb-net:
+    driver: bridge

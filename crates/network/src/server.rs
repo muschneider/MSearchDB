@@ -345,6 +345,7 @@ impl proto::query_service_server::QueryService for QueryServiceImpl {
 
         let docs = result.documents;
 
+        #[allow(clippy::result_large_err)]
         let stream = tokio_stream::iter(docs.into_iter().map(move |scored| {
             let payload = serde_json::to_vec(&scored).map_err(|e| {
                 Status::internal(format!("failed to serialize ScoredDocument: {}", e))

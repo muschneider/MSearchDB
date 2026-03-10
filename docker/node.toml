@@ -1,0 +1,36 @@
+# MSearchDB default node configuration for Docker
+#
+# Override individual settings via CLI flags:
+#   msearchdb --node-id 2 --http-port 9201 --peers "node1:9300,node3:9300"
+
+[node]
+id = 1
+data_dir = "/var/lib/msearchdb"
+
+[network]
+http_host = "0.0.0.0"
+http_port = 9200
+grpc_host = "0.0.0.0"
+grpc_port = 9300
+peers = []
+
+[storage]
+write_buffer_mb = 64
+max_open_files = 1000
+compression = true
+
+[index]
+heap_size_mb = 128
+merge_policy = "log"
+
+[cluster]
+replication_factor = 3
+election_timeout_ms = 150
+heartbeat_interval_ms = 50
+
+[auth]
+api_key = ""
+
+[observability]
+log_level = "info"
+metrics_port = 9100

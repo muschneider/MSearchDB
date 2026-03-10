@@ -27,6 +27,8 @@ use msearchdb_consensus::raft_node::RaftNode;
 use msearchdb_core::traits::{IndexBackend, StorageBackend};
 use msearchdb_network::connection_pool::ConnectionPool;
 
+use crate::metrics::Metrics;
+
 // ---------------------------------------------------------------------------
 // AppState
 // ---------------------------------------------------------------------------
@@ -58,6 +60,9 @@ pub struct AppState {
     /// Optional API key for authentication.
     /// If `None`, authentication is disabled.
     pub api_key: Option<String>,
+
+    /// Prometheus metrics registry.
+    pub metrics: Arc<Metrics>,
 }
 
 /// Metadata for a single collection.
