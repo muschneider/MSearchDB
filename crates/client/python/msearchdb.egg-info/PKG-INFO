@@ -1,0 +1,29 @@
+Metadata-Version: 2.4
+Name: msearchdb
+Version: 0.1.0
+Summary: Python client SDK for MSearchDB — a distributed NoSQL database with full-text search
+Author: MSearchDB Contributors
+License: MIT
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Topic :: Database
+Classifier: Topic :: Software Development :: Libraries :: Python Modules
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: requests>=2.28.0
+Requires-Dist: urllib3>=1.26.0
+Provides-Extra: async
+Requires-Dist: aiohttp>=3.8.0; extra == "async"
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.21; extra == "dev"
+Requires-Dist: aiohttp>=3.8.0; extra == "dev"
+Requires-Dist: responses>=0.23; extra == "dev"
+Requires-Dist: aioresponses>=0.7; extra == "dev"
