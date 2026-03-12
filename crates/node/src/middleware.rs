@@ -287,6 +287,12 @@ mod tests {
             collections: Arc::new(RwLock::new(HashMap::new())),
             api_key,
             metrics: Arc::new(crate::metrics::Metrics::new()),
+            local_node_id: config.node_id,
+            read_coordinator: Arc::new(
+                msearchdb_core::read_coordinator::ReadCoordinator::new(
+                    config.replication_factor,
+                ),
+            ),
         }
     }
 

@@ -20,6 +20,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 
+use crate::vector_clock::VectorClock;
+
 // ---------------------------------------------------------------------------
 // DocumentId — newtype over String for type safety
 // ---------------------------------------------------------------------------
@@ -150,13 +152,20 @@ impl From<Vec<FieldValue>> for FieldValue {
 /// A document stored in MSearchDB.
 ///
 /// Each document is a schemaless collection of named fields, identified by a
-/// unique [`DocumentId`].
+/// unique [`DocumentId`]. An optional [`VectorClock`] tracks the causal version
+/// across cluster nodes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Document {
     /// Unique identifier for this document.
     pub id: DocumentId,
     /// Map of field names to typed values.
     pub fields: HashMap<String, FieldValue>,
+    /// Causal version tracked via a vector clock.
+    ///
+    /// Defaults to an empty clock for newly created documents. Updated on
+    /// every write by incrementing the writing node's counter.
+    #[serde(default)]
+    pub version: VectorClock,
 }
 
 impl Document {
@@ -165,6 +174,7 @@ impl Document {
         Self {
             id,
             fields: HashMap::new(),
+            version: VectorClock::new(),
         }
     }
 

@@ -162,8 +162,7 @@ pub async fn bulk_index(
         // Flush insert batch when full
         if pending_docs.len() >= BATCH_SIZE {
             let batch = std::mem::take(&mut pending_docs);
-            let (batch_items, batch_errors, batch_count) =
-                flush_insert_batch(&state, batch).await;
+            let (batch_items, batch_errors, batch_count) = flush_insert_batch(&state, batch).await;
             items.extend(batch_items);
             if batch_errors {
                 has_errors = true;

@@ -49,7 +49,12 @@ async fn create_cluster() -> (Vec<RaftNode>, RouterMap) {
 async fn initialize_cluster(nodes: &[RaftNode]) {
     let mut members = BTreeMap::new();
     for id in 1..=3_u64 {
-        members.insert(id, BasicNode { addr: format!("127.0.0.1:{}", 9000 + id) });
+        members.insert(
+            id,
+            BasicNode {
+                addr: format!("127.0.0.1:{}", 9000 + id),
+            },
+        );
     }
     nodes[0].initialize(members).await.expect("init failed");
 }
@@ -119,7 +124,10 @@ async fn write_path_batch_100_documents() {
         })
         .collect();
 
-    let resp = leader.propose_batch(docs).await.expect("batch propose failed");
+    let resp = leader
+        .propose_batch(docs)
+        .await
+        .expect("batch propose failed");
 
     assert!(resp.success);
     assert_eq!(resp.affected_count, 100);
@@ -150,7 +158,11 @@ async fn write_path_batch_1000_documents_10_batches() {
             .unwrap_or_else(|e| panic!("batch {} propose failed: {}", batch_idx, e));
 
         assert!(resp.success, "batch {} was not successful", batch_idx);
-        assert_eq!(resp.affected_count, 100, "batch {} count mismatch", batch_idx);
+        assert_eq!(
+            resp.affected_count, 100,
+            "batch {} count mismatch",
+            batch_idx
+        );
     }
 }
 

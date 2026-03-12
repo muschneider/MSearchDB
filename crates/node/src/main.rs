@@ -20,6 +20,7 @@ use msearchdb_consensus::raft_node::RaftNode;
 use msearchdb_core::cluster::{NodeAddress, NodeId, NodeInfo, NodeStatus};
 use msearchdb_core::cluster_router::ClusterRouter;
 use msearchdb_core::config::NodeConfig;
+use msearchdb_core::read_coordinator::ReadCoordinator;
 use msearchdb_core::traits::{IndexBackend, StorageBackend};
 use msearchdb_index::schema_builder::{FieldConfig, FieldType, SchemaConfig};
 use msearchdb_index::tantivy_index::TantivyIndex;
@@ -185,8 +186,7 @@ async fn main() {
     // Build a default schema with the `_body` catch-all text field so that
     // schemaless documents are fully searchable via simple query-string and
     // match queries without requiring users to define a schema upfront.
-    let default_schema = SchemaConfig::new()
-        .with_field(FieldConfig::new("_body", FieldType::Text));
+    let default_schema = SchemaConfig::new().with_field(FieldConfig::new("_body", FieldType::Text));
 
     let index: Arc<dyn IndexBackend> = Arc::new(
         TantivyIndex::new(&index_dir, default_schema).unwrap_or_else(|e| {
@@ -262,6 +262,7 @@ async fn main() {
     }
 
     // Step 10: Build application state and HTTP router
+    let read_coordinator = Arc::new(ReadCoordinator::new(config.replication_factor));
     let state = AppState {
         raft_node,
         storage,
@@ -270,6 +271,8 @@ async fn main() {
         collections: Arc::new(RwLock::new(HashMap::new())),
         api_key: config.api_key.clone(),
         metrics,
+        local_node_id: config.node_id,
+        read_coordinator,
     };
 
     let app = msearchdb_node::build_router(state);

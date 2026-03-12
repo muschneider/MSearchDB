@@ -166,11 +166,7 @@ impl DbStateMachine {
                     success_count += 1;
                 }
 
-                tracing::info!(
-                    total,
-                    success_count,
-                    "batch insert applied"
-                );
+                tracing::info!(total, success_count, "batch insert applied");
 
                 if success_count == total {
                     RaftResponse::ok_batch(success_count)
@@ -557,9 +553,7 @@ mod tests {
     #[tokio::test]
     async fn apply_batch_insert_empty_succeeds() {
         let sm = make_sm();
-        let cmd = RaftCommand::BatchInsert {
-            documents: vec![],
-        };
+        let cmd = RaftCommand::BatchInsert { documents: vec![] };
         let resp = sm.apply_command(&cmd).await;
         // Empty batch is a no-op — zero affected but still "success" (all 0 of 0 succeeded).
         assert!(resp.success || resp.affected_count == 0);

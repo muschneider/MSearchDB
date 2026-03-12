@@ -118,6 +118,10 @@ async fn make_test_state() -> AppState {
         collections: Arc::new(RwLock::new(HashMap::new())),
         api_key: None,
         metrics: Arc::new(msearchdb_node::metrics::Metrics::new()),
+        local_node_id: config.node_id,
+        read_coordinator: Arc::new(
+            msearchdb_core::read_coordinator::ReadCoordinator::new(config.replication_factor),
+        ),
     }
 }
 
@@ -605,6 +609,135 @@ async fn test_request_id_header_present() {
     // X-Request-Id should be present in the response
     let request_id = resp.headers().get("x-request-id");
     assert!(request_id.is_some());
+}
+
+// ---------------------------------------------------------------------------
+// Auth middleware test
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Consistency-level read tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_read_with_all_consistency_returns_latest_value() {
+    let state = make_test_state().await;
+    let app = msearchdb_node::build_router(state);
+
+    // Create collection
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri("/collections/consist_test")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    let (status, _) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Index a document
+    let doc_body = json!({
+        "id": "c-doc-1",
+        "fields": {
+            "title": "Original Title",
+            "count": 1
+        }
+    });
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/collections/consist_test/docs")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::to_string(&doc_body).unwrap()))
+        .unwrap();
+    let (status, _) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Read with consistency=all — should return the document
+    let req = Request::builder()
+        .uri("/collections/consist_test/docs/c-doc-1?consistency=all")
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["_id"], "c-doc-1");
+    assert_eq!(body["found"], true);
+    assert_eq!(body["consistency"], "all");
+    assert!(body["_version"].is_number());
+    assert_eq!(body["_source"]["title"], "Original Title");
+
+    // Read with consistency=one
+    let req = Request::builder()
+        .uri("/collections/consist_test/docs/c-doc-1?consistency=one")
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["consistency"], "one");
+    assert_eq!(body["_source"]["title"], "Original Title");
+
+    // Read with default consistency (quorum)
+    let req = Request::builder()
+        .uri("/collections/consist_test/docs/c-doc-1")
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["consistency"], "quorum");
+    assert_eq!(body["_source"]["title"], "Original Title");
+
+    // Update the document
+    let upsert_body = json!({
+        "fields": {
+            "title": "Updated Title",
+            "count": 42
+        }
+    });
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri("/collections/consist_test/docs/c-doc-1")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::to_string(&upsert_body).unwrap()))
+        .unwrap();
+    let (status, body) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["result"], "updated");
+
+    // Read with consistency=all after update — must see the latest value
+    let req = Request::builder()
+        .uri("/collections/consist_test/docs/c-doc-1?consistency=all")
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["_id"], "c-doc-1");
+    assert_eq!(body["found"], true);
+    assert_eq!(body["consistency"], "all");
+    assert_eq!(body["_source"]["title"], "Updated Title");
+    assert_eq!(body["_source"]["count"], 42);
+}
+
+#[tokio::test]
+async fn test_read_missing_doc_with_consistency_returns_404() {
+    let state = make_test_state().await;
+    let app = msearchdb_node::build_router(state);
+
+    // Create collection
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri("/collections/consist_miss")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    let (status, _) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Read non-existent document with consistency=all
+    let req = Request::builder()
+        .uri("/collections/consist_miss/docs/no-such-doc?consistency=all")
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = send(app, req).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["type"], "not_found");
 }
 
 // ---------------------------------------------------------------------------

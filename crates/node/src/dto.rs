@@ -380,10 +380,22 @@ pub struct SimpleSearchParams {
     /// Maximum number of hits.
     #[serde(default = "default_simple_size")]
     pub size: usize,
+
+    /// Consistency level for the read (`one`, `quorum`, `all`).
+    #[serde(default)]
+    pub consistency: Option<String>,
 }
 
 fn default_simple_size() -> usize {
     10
+}
+
+/// Query parameters for `GET /collections/{name}/docs/{id}`.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct GetDocumentParams {
+    /// Consistency level for the read (`one`, `quorum`, `all`).
+    #[serde(default)]
+    pub consistency: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

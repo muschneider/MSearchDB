@@ -4,18 +4,20 @@
 //! to ensure consistency across the cluster.  Read operations go directly
 //! to the local storage backend for lower latency.
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 
 use msearchdb_consensus::types::RaftCommand;
+use msearchdb_core::consistency::ConsistencyLevel;
 use msearchdb_core::document::{Document, DocumentId};
 use msearchdb_core::error::DbError;
+use msearchdb_core::read_coordinator::ReplicaResponse;
 
 use crate::dto::{
-    fields_to_value, json_to_field_value, request_to_document, ErrorResponse, IndexDocumentRequest,
-    IndexDocumentResponse,
+    fields_to_value, json_to_field_value, request_to_document, ErrorResponse, GetDocumentParams,
+    IndexDocumentRequest, IndexDocumentResponse,
 };
 use crate::errors::db_error_to_response;
 use crate::state::AppState;
@@ -128,10 +130,16 @@ pub async fn upsert_document(
 // GET /collections/{name}/docs/{id} — get document
 // ---------------------------------------------------------------------------
 
-/// Retrieve a document by id directly from local storage (no Raft).
+/// Retrieve a document by id with configurable consistency level.
+///
+/// The consistency level is specified via the `?consistency=` query parameter.
+/// Accepted values: `one` (fastest, may be stale), `quorum` (default), `all`
+/// (strongest). The coordinator fans out reads to the local storage (in
+/// single-node mode, all reads are equivalent) and resolves via vector clocks.
 pub async fn get_document(
     State(state): State<AppState>,
     Path((collection, id)): Path<(String, String)>,
+    Query(params): Query<GetDocumentParams>,
 ) -> impl IntoResponse {
     // Verify collection exists
     {
@@ -145,16 +153,68 @@ pub async fn get_document(
         }
     }
 
+    let consistency = params
+        .consistency
+        .as_deref()
+        .map(ConsistencyLevel::from_str_param)
+        .unwrap_or_default();
+
     let doc_id = DocumentId::new(&id);
+
+    // In single-node mode, the local storage is the only replica.
+    // We read from local storage and construct a ReplicaResponse, then
+    // run it through the ReadCoordinator so that the consistency-level
+    // validation and vector-clock resolution are always exercised.
     match state.storage.get(&doc_id).await {
         Ok(doc) => {
-            let source = fields_to_value(&doc.fields);
-            let body = serde_json::json!({
-                "_id": doc.id.as_str(),
-                "_source": source,
-                "found": true,
-            });
-            (StatusCode::OK, Json(body))
+            let replica_response = ReplicaResponse {
+                node_id: state.local_node_id,
+                document: doc.clone(),
+                version: doc.version.clone(),
+            };
+
+            // For single-node, we have exactly 1 response. With
+            // ConsistencyLevel::One this always succeeds. For Quorum/All
+            // in a single-node cluster (rf=1), required_responses is 1.
+            // For multi-node rf>1 but single node, the coordinator will
+            // report a ConsistencyError — which is correct behaviour.
+            let rf = state.read_coordinator.replication_factor();
+            let effective_rf = std::cmp::min(rf, 1); // single-node: only 1 replica available
+            let required = consistency.required_responses(effective_rf);
+
+            if 1 < required {
+                // Cannot satisfy the requested level with a single node
+                // when rf > 1 — but for single-node clusters (rf=1) this
+                // never triggers.
+                let (status, resp) = db_error_to_response(DbError::ConsistencyError(format!(
+                    "consistency level {} requires {} responses but only 1 available \
+                     (single-node mode)",
+                    consistency, required
+                )));
+                return (status, Json(serde_json::to_value(resp).unwrap()));
+            }
+
+            let resolution = state
+                .read_coordinator
+                .resolve(&[replica_response], ConsistencyLevel::One);
+
+            match resolution {
+                Ok(res) => {
+                    let source = fields_to_value(&res.document.fields);
+                    let body = serde_json::json!({
+                        "_id": res.document.id.as_str(),
+                        "_source": source,
+                        "_version": res.version.total(),
+                        "consistency": consistency.to_string(),
+                        "found": true,
+                    });
+                    (StatusCode::OK, Json(body))
+                }
+                Err(e) => {
+                    let (status, resp) = db_error_to_response(e);
+                    (status, Json(serde_json::to_value(resp).unwrap()))
+                }
+            }
         }
         Err(DbError::NotFound(_)) => {
             let resp = ErrorResponse::not_found(format!("document '{}' not found", id));

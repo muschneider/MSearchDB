@@ -24,6 +24,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use msearchdb_consensus::raft_node::RaftNode;
+use msearchdb_core::cluster::NodeId;
+use msearchdb_core::read_coordinator::ReadCoordinator;
 use msearchdb_core::traits::{IndexBackend, StorageBackend};
 use msearchdb_network::connection_pool::ConnectionPool;
 
@@ -63,6 +65,12 @@ pub struct AppState {
 
     /// Prometheus metrics registry.
     pub metrics: Arc<Metrics>,
+
+    /// This node's unique identifier, used for vector clock increments.
+    pub local_node_id: NodeId,
+
+    /// Read coordinator for consistency-level-aware distributed reads.
+    pub read_coordinator: Arc<ReadCoordinator>,
 }
 
 /// Metadata for a single collection.

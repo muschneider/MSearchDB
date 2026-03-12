@@ -26,19 +26,25 @@
 pub mod cluster;
 pub mod cluster_router;
 pub mod config;
+pub mod consistency;
 pub mod consistent_hash;
 pub mod document;
 pub mod error;
 pub mod query;
+pub mod read_coordinator;
 pub mod rebalancer;
 pub mod traits;
+pub mod vector_clock;
 
 // Re-export the most commonly used types at crate root for ergonomics.
 pub use cluster::{ClusterState, NodeId, NodeInfo, NodeStatus};
 pub use cluster_router::ClusterRouter;
 pub use config::NodeConfig;
+pub use consistency::ConsistencyLevel;
 pub use consistent_hash::ConsistentHashRing;
 pub use document::{Document, DocumentId, FieldValue};
 pub use error::{DbError, DbResult};
 pub use query::{Query, SearchResult};
+pub use read_coordinator::{ReadCoordinator, ReadResolution, ReplicaResponse};
 pub use rebalancer::{DataMove, RebalancePlan, RebalanceStatus};
+pub use vector_clock::VectorClock;

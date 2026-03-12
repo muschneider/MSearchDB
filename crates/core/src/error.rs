@@ -54,6 +54,10 @@ pub enum DbError {
     /// The input provided by the caller was invalid.
     #[error("invalid input: {0}")]
     InvalidInput(String),
+
+    /// A read could not satisfy the requested consistency level.
+    #[error("consistency error: {0}")]
+    ConsistencyError(String),
 }
 
 /// A convenience alias used throughout MSearchDB.

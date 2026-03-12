@@ -56,6 +56,7 @@ use msearchdb_core::query::{
     SearchResult, TermQuery as CoreTermQuery,
 };
 use msearchdb_core::traits::IndexBackend;
+use msearchdb_core::VectorClock;
 
 use crate::analyzer::register_analyzers;
 use crate::schema_builder::{DynamicSchemaBuilder, FieldMap, SchemaConfig};
@@ -320,6 +321,7 @@ impl TantivyIndex {
         Document {
             id: DocumentId::new(id),
             fields,
+            version: VectorClock::new(),
         }
     }
 

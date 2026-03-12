@@ -48,6 +48,10 @@ pub fn db_error_to_response(err: DbError) -> (StatusCode, ErrorResponse) {
             StatusCode::SERVICE_UNAVAILABLE,
             ErrorResponse::service_unavailable(msg.clone()),
         ),
+        DbError::ConsistencyError(msg) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            ErrorResponse::service_unavailable(msg.clone()),
+        ),
         DbError::NetworkError(msg) => (
             StatusCode::BAD_GATEWAY,
             ErrorResponse::new(502, "network_error", msg.clone()),
