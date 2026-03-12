@@ -21,7 +21,7 @@ use msearchdb_core::cluster::{NodeAddress, NodeId, NodeInfo, NodeStatus};
 use msearchdb_core::cluster_router::ClusterRouter;
 use msearchdb_core::config::NodeConfig;
 use msearchdb_core::traits::{IndexBackend, StorageBackend};
-use msearchdb_index::schema_builder::SchemaConfig;
+use msearchdb_index::schema_builder::{FieldConfig, FieldType, SchemaConfig};
 use msearchdb_index::tantivy_index::TantivyIndex;
 use msearchdb_network::connection_pool::ConnectionPool;
 use msearchdb_node::cluster_manager::ClusterManager;
@@ -182,8 +182,14 @@ async fn main() {
 
     // Step 5: Initialise Tantivy index
     tracing::info!(path = %index_dir.display(), "opening Tantivy index");
+    // Build a default schema with the `_body` catch-all text field so that
+    // schemaless documents are fully searchable via simple query-string and
+    // match queries without requiring users to define a schema upfront.
+    let default_schema = SchemaConfig::new()
+        .with_field(FieldConfig::new("_body", FieldType::Text));
+
     let index: Arc<dyn IndexBackend> = Arc::new(
-        TantivyIndex::new(&index_dir, SchemaConfig::default()).unwrap_or_else(|e| {
+        TantivyIndex::new(&index_dir, default_schema).unwrap_or_else(|e| {
             tracing::error!(error = %e, "failed to create Tantivy index");
             std::process::exit(1);
         }),

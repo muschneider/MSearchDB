@@ -76,6 +76,15 @@ pub trait IndexBackend: Send + Sync {
 
     /// Remove a document from the search index.
     async fn delete_document(&self, id: &DocumentId) -> DbResult<()>;
+
+    /// Commit buffered writes to make them visible to searchers.
+    ///
+    /// Not all implementations buffer writes; the default is a no-op.
+    /// Tantivy batches writes in memory until `commit()` flushes them to
+    /// disk segments and reloads the reader.
+    async fn commit_index(&self) -> DbResult<()> {
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -34,8 +34,17 @@ pub async fn refresh_collection(
         }
     }
 
-    // The TantivyIndex commit is handled by the state machine, but
-    // we expose this endpoint for explicit user-initiated refreshes.
+    // Explicitly commit the index so buffered writes become visible to
+    // searchers immediately (rather than waiting for the next Raft apply cycle).
+    if let Err(e) = state.index.commit_index().await {
+        tracing::error!(collection = %collection, error = %e, "index commit failed");
+        let resp = ErrorResponse::internal(format!("index commit failed: {}", e));
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::to_value(resp).unwrap()),
+        );
+    }
+
     let body = serde_json::json!({
         "acknowledged": true,
         "collection": collection,

@@ -197,6 +197,7 @@ impl NodeClient {
             Ok(RaftResponse {
                 success: true,
                 document_id: doc_id,
+                affected_count: 1,
             })
         } else {
             Err(DbError::NetworkError(format!(

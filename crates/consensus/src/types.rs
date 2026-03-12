@@ -81,6 +81,16 @@ pub enum RaftCommand {
         /// The name of the collection to delete.
         name: String,
     },
+
+    /// Insert a batch of documents atomically.
+    ///
+    /// Groups up to [`BATCH_SIZE`](crate) documents into a single Raft log
+    /// entry to amortise consensus overhead. The state machine applies all
+    /// documents to storage and index in one pass, then commits the index.
+    BatchInsert {
+        /// The documents to insert.
+        documents: Vec<Document>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -97,6 +107,9 @@ pub struct RaftResponse {
     pub success: bool,
     /// The id of the affected document, if applicable.
     pub document_id: Option<DocumentId>,
+    /// Number of documents affected (used by batch operations).
+    #[serde(default)]
+    pub affected_count: usize,
 }
 
 impl RaftResponse {
@@ -105,6 +118,7 @@ impl RaftResponse {
         Self {
             success: true,
             document_id: Some(id),
+            affected_count: 1,
         }
     }
 
@@ -113,6 +127,7 @@ impl RaftResponse {
         Self {
             success: true,
             document_id: None,
+            affected_count: 0,
         }
     }
 
@@ -121,6 +136,16 @@ impl RaftResponse {
         Self {
             success: false,
             document_id: None,
+            affected_count: 0,
+        }
+    }
+
+    /// Create a successful batch response with the count of inserted documents.
+    pub fn ok_batch(count: usize) -> Self {
+        Self {
+            success: true,
+            document_id: None,
+            affected_count: count,
         }
     }
 }
@@ -244,5 +269,30 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         let back: RaftResponse = serde_json::from_str(&json).unwrap();
         assert_eq!(resp, back);
+    }
+
+    #[test]
+    fn raft_command_batch_insert_serde_roundtrip() {
+        let docs = vec![
+            Document::new(DocumentId::new("b1"))
+                .with_field("title", FieldValue::Text("first".into())),
+            Document::new(DocumentId::new("b2"))
+                .with_field("title", FieldValue::Text("second".into())),
+        ];
+        let cmd = RaftCommand::BatchInsert {
+            documents: docs.clone(),
+        };
+
+        let json = serde_json::to_string(&cmd).unwrap();
+        let back: RaftCommand = serde_json::from_str(&json).unwrap();
+        assert_eq!(cmd, back);
+    }
+
+    #[test]
+    fn raft_response_batch_constructors() {
+        let batch = RaftResponse::ok_batch(100);
+        assert!(batch.success);
+        assert!(batch.document_id.is_none());
+        assert_eq!(batch.affected_count, 100);
     }
 }

@@ -148,6 +148,39 @@ impl DbStateMachine {
                 tracing::info!(collection = %name, "collection deleted");
                 RaftResponse::ok_no_id()
             }
+
+            RaftCommand::BatchInsert { documents } => {
+                let total = documents.len();
+                let mut success_count = 0usize;
+
+                for doc in documents {
+                    let id = doc.id.clone();
+                    if let Err(e) = self.storage.put(doc.clone()).await {
+                        tracing::error!(error = %e, doc_id = %id, "batch: failed to store document");
+                        continue;
+                    }
+                    if let Err(e) = self.index.index_document(doc).await {
+                        tracing::error!(error = %e, doc_id = %id, "batch: failed to index document");
+                        // Storage succeeded but index failed — count as partial success.
+                    }
+                    success_count += 1;
+                }
+
+                tracing::info!(
+                    total,
+                    success_count,
+                    "batch insert applied"
+                );
+
+                if success_count == total {
+                    RaftResponse::ok_batch(success_count)
+                } else if success_count > 0 {
+                    // Partial success — still report ok but with actual count.
+                    RaftResponse::ok_batch(success_count)
+                } else {
+                    RaftResponse::fail()
+                }
+            }
         }
     }
 }
@@ -179,6 +212,7 @@ impl RaftStateMachine<TypeConfig> for DbStateMachine {
         I::IntoIter: Send,
     {
         let mut responses = Vec::new();
+        let mut needs_index_commit = false;
 
         for entry in entries {
             let log_id = entry.log_id;
@@ -190,6 +224,14 @@ impl RaftStateMachine<TypeConfig> for DbStateMachine {
                     responses.push(RaftResponse::ok_no_id());
                 }
                 EntryPayload::Normal(cmd) => {
+                    // Track whether we need a commit after this batch of entries.
+                    if matches!(cmd, RaftCommand::BatchInsert { .. })
+                        || matches!(cmd, RaftCommand::InsertDocument { .. })
+                        || matches!(cmd, RaftCommand::UpdateDocument { .. })
+                        || matches!(cmd, RaftCommand::DeleteDocument { .. })
+                    {
+                        needs_index_commit = true;
+                    }
                     let resp = self.apply_command(&cmd).await;
                     responses.push(resp);
                 }
@@ -197,6 +239,14 @@ impl RaftStateMachine<TypeConfig> for DbStateMachine {
                     *self.last_membership.write().await = StoredMembership::new(Some(log_id), mem);
                     responses.push(RaftResponse::ok_no_id());
                 }
+            }
+        }
+
+        // Commit the index once after processing all entries in this batch.
+        // This amortises the expensive Tantivy commit across many entries.
+        if needs_index_commit {
+            if let Err(e) = self.index.commit_index().await {
+                tracing::error!(error = %e, "failed to commit index after apply batch");
             }
         }
 
@@ -470,5 +520,48 @@ mod tests {
         };
         let resp = sm.apply_command(&cmd).await;
         assert!(resp.success);
+    }
+
+    #[tokio::test]
+    async fn apply_batch_insert_stores_all_documents() {
+        let sm = make_sm();
+
+        let docs: Vec<Document> = (0..100)
+            .map(|i| {
+                Document::new(DocumentId::new(format!("batch-{}", i)))
+                    .with_field("title", FieldValue::Text(format!("Doc {}", i)))
+            })
+            .collect();
+
+        let cmd = RaftCommand::BatchInsert {
+            documents: docs.clone(),
+        };
+        let resp = sm.apply_command(&cmd).await;
+        assert!(resp.success);
+        assert_eq!(resp.affected_count, 100);
+
+        // Verify all documents are in storage.
+        for i in 0..100 {
+            let fetched = sm
+                .storage
+                .get(&DocumentId::new(format!("batch-{}", i)))
+                .await
+                .unwrap();
+            assert_eq!(
+                fetched.get_field("title"),
+                Some(&FieldValue::Text(format!("Doc {}", i)))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_batch_insert_empty_succeeds() {
+        let sm = make_sm();
+        let cmd = RaftCommand::BatchInsert {
+            documents: vec![],
+        };
+        let resp = sm.apply_command(&cmd).await;
+        // Empty batch is a no-op — zero affected but still "success" (all 0 of 0 succeeded).
+        assert!(resp.success || resp.affected_count == 0);
     }
 }

@@ -227,8 +227,16 @@ impl TantivyIndex {
             tantivy_doc.add_u64(ts_field, ts);
         }
 
+        // Collect all text values to populate the `_body` catch-all field.
+        let mut body_parts: Vec<&str> = Vec::new();
+
         // Map user fields
         for (name, value) in &doc.fields {
+            // Collect text for the `_body` catch-all regardless of schema
+            if let FieldValue::Text(text) = value {
+                body_parts.push(text);
+            }
+
             if let Some(&field) = self.field_map.get(name) {
                 match value {
                     FieldValue::Text(text) => {
@@ -245,6 +253,7 @@ impl TantivyIndex {
                         for item in arr {
                             if let FieldValue::Text(text) = item {
                                 tantivy_doc.add_text(field, text);
+                                body_parts.push(text);
                             }
                         }
                     }
@@ -255,6 +264,14 @@ impl TantivyIndex {
             // Fields not in the schema are silently skipped —
             // this supports schemaless documents where only configured
             // fields are indexed.
+        }
+
+        // Populate `_body` catch-all field with concatenated text content.
+        // This enables simple query-string search over schemaless documents.
+        if !body_parts.is_empty() {
+            if let Some(&body_field) = self.field_map.get("_body") {
+                tantivy_doc.add_text(body_field, body_parts.join(" "));
+            }
         }
 
         tantivy_doc
@@ -663,8 +680,16 @@ impl IndexBackend for TantivyIndex {
                 tantivy_doc.add_u64(ts_field, ts);
             }
 
+            // Collect all text values to populate the `_body` catch-all field.
+            let mut body_parts: Vec<&str> = Vec::new();
+
             // Map user fields
             for (name, value) in &doc.fields {
+                // Collect text for the `_body` catch-all regardless of schema
+                if let FieldValue::Text(text) = value {
+                    body_parts.push(text);
+                }
+
                 if let Some(&field) = field_map.get(name) {
                     match value {
                         FieldValue::Text(text) => tantivy_doc.add_text(field, text),
@@ -676,11 +701,19 @@ impl IndexBackend for TantivyIndex {
                             for item in arr {
                                 if let FieldValue::Text(text) = item {
                                     tantivy_doc.add_text(field, text);
+                                    body_parts.push(text);
                                 }
                             }
                         }
                         _ => {}
                     }
+                }
+            }
+
+            // Populate `_body` catch-all field with concatenated text content.
+            if !body_parts.is_empty() {
+                if let Some(&body_field) = field_map.get("_body") {
+                    tantivy_doc.add_text(body_field, body_parts.join(" "));
                 }
             }
 
@@ -700,6 +733,26 @@ impl IndexBackend for TantivyIndex {
         // We need to perform the search in the current thread context
         // because Searcher borrows from reader
         self.search_sync(query, DEFAULT_SEARCH_LIMIT)
+    }
+
+    /// Commit buffered writes so they become visible to searchers.
+    async fn commit_index(&self) -> DbResult<()> {
+        let writer = Arc::clone(&self.writer);
+        let reader = self.reader.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let mut w = writer
+                .lock()
+                .map_err(|e| DbError::IndexError(format!("writer lock: {}", e)))?;
+            w.commit()
+                .map_err(|e| DbError::IndexError(format!("commit failed: {}", e)))?;
+            reader
+                .reload()
+                .map_err(|e| DbError::IndexError(format!("reader reload: {}", e)))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| DbError::IndexError(format!("spawn_blocking: {}", e)))?
     }
 
     /// Remove a document from the index.

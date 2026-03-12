@@ -152,6 +152,24 @@ impl RaftNode {
         }
     }
 
+    /// Propose a batch of documents as a single [`RaftCommand::BatchInsert`].
+    ///
+    /// Groups the given documents into a single Raft log entry.  This
+    /// amortises the per-entry consensus overhead (leader commit, follower
+    /// replication) across many documents, dramatically improving throughput
+    /// for bulk writes.
+    ///
+    /// The caller is responsible for chunking into the desired batch size
+    /// (typically 100 documents); this method sends whatever it receives as
+    /// one entry.
+    pub async fn propose_batch(
+        &self,
+        documents: Vec<msearchdb_core::document::Document>,
+    ) -> DbResult<RaftResponse> {
+        let cmd = RaftCommand::BatchInsert { documents };
+        self.propose(cmd).await
+    }
+
     /// Add a learner node to the cluster.
     ///
     /// A learner receives replicated logs but does not vote in elections.
