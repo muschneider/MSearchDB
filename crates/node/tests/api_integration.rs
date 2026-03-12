@@ -119,9 +119,9 @@ async fn make_test_state() -> AppState {
         api_key: None,
         metrics: Arc::new(msearchdb_node::metrics::Metrics::new()),
         local_node_id: config.node_id,
-        read_coordinator: Arc::new(
-            msearchdb_core::read_coordinator::ReadCoordinator::new(config.replication_factor),
-        ),
+        read_coordinator: Arc::new(msearchdb_core::read_coordinator::ReadCoordinator::new(
+            config.replication_factor,
+        )),
     }
 }
 
@@ -660,7 +660,7 @@ async fn test_read_with_all_consistency_returns_latest_value() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["_id"], "c-doc-1");
     assert_eq!(body["found"], true);
-    assert_eq!(body["consistency"], "all");
+    assert_eq!(body["consistency"], "ALL");
     assert!(body["_version"].is_number());
     assert_eq!(body["_source"]["title"], "Original Title");
 
@@ -671,7 +671,7 @@ async fn test_read_with_all_consistency_returns_latest_value() {
         .unwrap();
     let (status, body) = send(app.clone(), req).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["consistency"], "one");
+    assert_eq!(body["consistency"], "ONE");
     assert_eq!(body["_source"]["title"], "Original Title");
 
     // Read with default consistency (quorum)
@@ -681,7 +681,7 @@ async fn test_read_with_all_consistency_returns_latest_value() {
         .unwrap();
     let (status, body) = send(app.clone(), req).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["consistency"], "quorum");
+    assert_eq!(body["consistency"], "QUORUM");
     assert_eq!(body["_source"]["title"], "Original Title");
 
     // Update the document
@@ -710,9 +710,9 @@ async fn test_read_with_all_consistency_returns_latest_value() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["_id"], "c-doc-1");
     assert_eq!(body["found"], true);
-    assert_eq!(body["consistency"], "all");
+    assert_eq!(body["consistency"], "ALL");
     assert_eq!(body["_source"]["title"], "Updated Title");
-    assert_eq!(body["_source"]["count"], 42);
+    assert_eq!(body["_source"]["count"], 42.0);
 }
 
 #[tokio::test]
