@@ -25,6 +25,7 @@
 
 pub mod cluster;
 pub mod cluster_router;
+pub mod collection;
 pub mod config;
 pub mod consistency;
 pub mod consistent_hash;
@@ -39,6 +40,7 @@ pub mod vector_clock;
 // Re-export the most commonly used types at crate root for ergonomics.
 pub use cluster::{ClusterState, NodeId, NodeInfo, NodeStatus};
 pub use cluster_router::ClusterRouter;
+pub use collection::{Collection, CollectionAlias, CollectionSettings, FieldMapping, MappedFieldType};
 pub use config::NodeConfig;
 pub use consistency::ConsistencyLevel;
 pub use consistent_hash::ConsistentHashRing;

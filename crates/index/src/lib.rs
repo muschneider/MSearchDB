@@ -76,6 +76,7 @@
 pub use msearchdb_core;
 
 pub mod analyzer;
+pub mod collection_index;
 pub mod highlighting;
 pub mod query_builder;
 pub mod schema_builder;

@@ -349,6 +349,98 @@ impl RocksDbStorage {
     pub fn current_sequence(&self) -> u64 {
         self.sequence.load(Ordering::SeqCst)
     }
+
+    // -- Collection-scoped operations ----------------------------------------
+
+    /// Return the column-family name used for documents in a given collection.
+    ///
+    /// Convention: `col_{collection_name}`.
+    fn collection_cf_name(collection: &str) -> String {
+        format!("col_{}", collection)
+    }
+
+    /// Create a column family for the named collection.
+    ///
+    /// The CF is configured with the same bloom-filter and compression
+    /// settings as the default `documents` CF.
+    pub fn create_collection_cf(&self, collection: &str) -> DbResult<()> {
+        let cf_name = Self::collection_cf_name(collection);
+
+        // If CF already exists, this is a no-op (idempotent).
+        if self.db.cf_handle(&cf_name).is_some() {
+            return Ok(());
+        }
+
+        let mut cf_opts = Options::default();
+        let mut block_opts = BlockBasedOptions::default();
+        block_opts.set_bloom_filter(10.0, false);
+        cf_opts.set_block_based_table_factory(&block_opts);
+
+        self.db
+            .create_cf(&cf_name, &cf_opts)
+            .map_err(|e| DbError::StorageError(format!("failed to create CF '{}': {}", cf_name, e)))?;
+
+        tracing::info!(collection, cf = %cf_name, "created collection column family");
+        Ok(())
+    }
+
+    /// Drop the column family for the named collection.
+    pub fn drop_collection_cf(&self, collection: &str) -> DbResult<()> {
+        let cf_name = Self::collection_cf_name(collection);
+        self.db
+            .drop_cf(&cf_name)
+            .map_err(|e| DbError::StorageError(format!("failed to drop CF '{}': {}", cf_name, e)))?;
+
+        tracing::info!(collection, cf = %cf_name, "dropped collection column family");
+        Ok(())
+    }
+
+    /// Check whether a collection column family exists.
+    pub fn collection_cf_exists(&self, collection: &str) -> bool {
+        let cf_name = Self::collection_cf_name(collection);
+        self.db.cf_handle(&cf_name).is_some()
+    }
+
+    /// Store a document in a collection-specific column family.
+    pub async fn put_document_in_collection(
+        &self,
+        collection: &str,
+        doc: &Document,
+    ) -> DbResult<()> {
+        let value =
+            rmp_serde::to_vec(doc).map_err(|e| DbError::SerializationError(e.to_string()))?;
+        let cf_name = Self::collection_cf_name(collection);
+        self.put(&cf_name, doc.id.as_str().as_bytes(), &value)
+            .await
+    }
+
+    /// Retrieve a document from a collection-specific column family.
+    pub async fn get_document_from_collection(
+        &self,
+        collection: &str,
+        id: &DocumentId,
+    ) -> DbResult<Option<Document>> {
+        let cf_name = Self::collection_cf_name(collection);
+        let raw = self.get(&cf_name, id.as_str().as_bytes()).await?;
+        match raw {
+            Some(bytes) => {
+                let doc: Document = rmp_serde::from_slice(&bytes)
+                    .map_err(|e| DbError::SerializationError(e.to_string()))?;
+                Ok(Some(doc))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Delete a document from a collection-specific column family.
+    pub async fn delete_document_from_collection(
+        &self,
+        collection: &str,
+        id: &DocumentId,
+    ) -> DbResult<()> {
+        let cf_name = Self::collection_cf_name(collection);
+        self.delete(&cf_name, id.as_str().as_bytes()).await
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -391,6 +483,102 @@ impl StorageBackend for RocksDbStorage {
             let cf = db
                 .cf_handle(CF_DOCUMENTS)
                 .ok_or_else(|| DbError::StorageError("missing documents CF".into()))?;
+
+            let iter = db.iterator_cf(
+                &cf,
+                IteratorMode::From(start.as_bytes(), rocksdb::Direction::Forward),
+            );
+
+            let mut docs = Vec::new();
+            for item in iter {
+                let (k, v) = item.map_err(|e| DbError::StorageError(e.to_string()))?;
+                let key_str = String::from_utf8_lossy(&k);
+                if key_str.as_ref() > end.as_str() {
+                    break;
+                }
+                let doc: Document = rmp_serde::from_slice(&v)
+                    .map_err(|e| DbError::SerializationError(e.to_string()))?;
+                docs.push(doc);
+                if docs.len() >= limit {
+                    break;
+                }
+            }
+            Ok(docs)
+        })
+        .await
+        .map_err(|e| DbError::StorageError(format!("spawn_blocking join error: {}", e)))?
+    }
+
+    // -- Collection-scoped StorageBackend methods ----------------------------
+
+    async fn create_collection(&self, collection: &str) -> DbResult<()> {
+        self.create_collection_cf(collection)
+    }
+
+    async fn drop_collection(&self, collection: &str) -> DbResult<()> {
+        self.drop_collection_cf(collection)
+    }
+
+    async fn collection_exists(&self, collection: &str) -> DbResult<bool> {
+        Ok(self.collection_cf_exists(collection))
+    }
+
+    async fn get_from_collection(
+        &self,
+        collection: &str,
+        id: &DocumentId,
+    ) -> DbResult<Document> {
+        self.get_document_from_collection(collection, id)
+            .await?
+            .ok_or_else(|| {
+                DbError::NotFound(format!(
+                    "document '{}' not found in collection '{}'",
+                    id, collection
+                ))
+            })
+    }
+
+    async fn put_in_collection(
+        &self,
+        collection: &str,
+        document: Document,
+    ) -> DbResult<()> {
+        self.put_document_in_collection(collection, &document).await
+    }
+
+    async fn delete_from_collection(
+        &self,
+        collection: &str,
+        id: &DocumentId,
+    ) -> DbResult<()> {
+        // Check existence first per trait contract.
+        let exists = self
+            .get_document_from_collection(collection, id)
+            .await?;
+        if exists.is_none() {
+            return Err(DbError::NotFound(format!(
+                "document '{}' not found in collection '{}'",
+                id, collection
+            )));
+        }
+        self.delete_document_from_collection(collection, id).await
+    }
+
+    async fn scan_collection(
+        &self,
+        collection: &str,
+        range: RangeInclusive<DocumentId>,
+        limit: usize,
+    ) -> DbResult<Vec<Document>> {
+        let db = Arc::clone(&self.db);
+        let cf_name = Self::collection_cf_name(collection);
+        let start = range.start().as_str().to_owned();
+        let end = range.end().as_str().to_owned();
+
+        tokio::task::spawn_blocking(move || {
+            let cf = db
+                .cf_handle(&cf_name)
+                .ok_or_else(|| DbError::StorageError(format!("missing CF: {}", cf_name)))?;
 
             let iter = db.iterator_cf(
                 &cf,
@@ -515,6 +703,161 @@ mod tests {
         assert_eq!(opts.max_open_files, 1000);
         assert!(opts.compression);
         assert_eq!(opts.bloom_filter_bits, 10);
+    }
+
+    // -- Collection-scoped tests -----------------------------------------------
+
+    #[tokio::test]
+    async fn create_and_check_collection_cf() {
+        let (_dir, storage) = temp_storage();
+
+        assert!(!storage.collection_cf_exists("products"));
+        storage.create_collection_cf("products").unwrap();
+        assert!(storage.collection_cf_exists("products"));
+
+        // Idempotent — second call should succeed
+        storage.create_collection_cf("products").unwrap();
+        assert!(storage.collection_cf_exists("products"));
+    }
+
+    #[tokio::test]
+    async fn collection_document_roundtrip() {
+        let (_dir, storage) = temp_storage();
+        storage.create_collection_cf("orders").unwrap();
+
+        let doc = Document::new(DocumentId::new("order-1"))
+            .with_field("total", FieldValue::Number(99.95))
+            .with_field("status", FieldValue::Text("pending".into()));
+
+        storage
+            .put_document_in_collection("orders", &doc)
+            .await
+            .unwrap();
+
+        let loaded = storage
+            .get_document_from_collection("orders", &DocumentId::new("order-1"))
+            .await
+            .unwrap()
+            .expect("document should exist");
+
+        assert_eq!(loaded.id.as_str(), "order-1");
+        assert_eq!(loaded.get_field("total"), doc.get_field("total"));
+        assert_eq!(loaded.get_field("status"), doc.get_field("status"));
+    }
+
+    #[tokio::test]
+    async fn collection_isolation_between_collections() {
+        let (_dir, storage) = temp_storage();
+        storage.create_collection_cf("col_a").unwrap();
+        storage.create_collection_cf("col_b").unwrap();
+
+        let doc_a = Document::new(DocumentId::new("shared-id"))
+            .with_field("source", FieldValue::Text("col_a".into()));
+        let doc_b = Document::new(DocumentId::new("shared-id"))
+            .with_field("source", FieldValue::Text("col_b".into()));
+
+        storage
+            .put_document_in_collection("col_a", &doc_a)
+            .await
+            .unwrap();
+        storage
+            .put_document_in_collection("col_b", &doc_b)
+            .await
+            .unwrap();
+
+        // Same id, different data in different collections
+        let from_a = storage
+            .get_document_from_collection("col_a", &DocumentId::new("shared-id"))
+            .await
+            .unwrap()
+            .unwrap();
+        let from_b = storage
+            .get_document_from_collection("col_b", &DocumentId::new("shared-id"))
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            from_a.get_field("source"),
+            Some(&FieldValue::Text("col_a".into()))
+        );
+        assert_eq!(
+            from_b.get_field("source"),
+            Some(&FieldValue::Text("col_b".into()))
+        );
+    }
+
+    #[tokio::test]
+    async fn drop_collection_cf_removes_data() {
+        let (_dir, storage) = temp_storage();
+        storage.create_collection_cf("temp").unwrap();
+
+        let doc = Document::new(DocumentId::new("d1"));
+        storage
+            .put_document_in_collection("temp", &doc)
+            .await
+            .unwrap();
+
+        storage.drop_collection_cf("temp").unwrap();
+        assert!(!storage.collection_cf_exists("temp"));
+    }
+
+    #[tokio::test]
+    async fn collection_delete_document() {
+        let (_dir, storage) = temp_storage();
+        storage.create_collection_cf("items").unwrap();
+
+        let doc = Document::new(DocumentId::new("item-1"));
+        storage
+            .put_document_in_collection("items", &doc)
+            .await
+            .unwrap();
+
+        storage
+            .delete_document_from_collection("items", &DocumentId::new("item-1"))
+            .await
+            .unwrap();
+
+        let result = storage
+            .get_document_from_collection("items", &DocumentId::new("item-1"))
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn storage_backend_trait_collection_methods() {
+        use msearchdb_core::traits::StorageBackend;
+
+        let (_dir, storage) = temp_storage();
+
+        // Create via trait
+        StorageBackend::create_collection(&storage, "via_trait").await.unwrap();
+        assert!(StorageBackend::collection_exists(&storage, "via_trait").await.unwrap());
+
+        // Put via trait
+        let doc = Document::new(DocumentId::new("t1"))
+            .with_field("x", FieldValue::Text("hello".into()));
+        StorageBackend::put_in_collection(&storage, "via_trait", doc.clone())
+            .await
+            .unwrap();
+
+        // Get via trait
+        let fetched = StorageBackend::get_from_collection(&storage, "via_trait", &DocumentId::new("t1"))
+            .await
+            .unwrap();
+        assert_eq!(fetched.id.as_str(), "t1");
+
+        // Delete via trait
+        StorageBackend::delete_from_collection(&storage, "via_trait", &DocumentId::new("t1"))
+            .await
+            .unwrap();
+        let result = StorageBackend::get_from_collection(&storage, "via_trait", &DocumentId::new("t1")).await;
+        assert!(result.is_err());
+
+        // Drop via trait
+        StorageBackend::drop_collection(&storage, "via_trait").await.unwrap();
+        assert!(!StorageBackend::collection_exists(&storage, "via_trait").await.unwrap());
     }
 
     #[tokio::test]

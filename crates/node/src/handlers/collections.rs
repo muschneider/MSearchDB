@@ -11,6 +11,8 @@ use axum::Json;
 use msearchdb_consensus::types::RaftCommand;
 use msearchdb_index::schema_builder::SchemaConfig;
 
+use msearchdb_core::collection::{CollectionSettings, FieldMapping};
+
 use crate::dto::{CollectionInfoResponse, CreateCollectionRequest, ErrorResponse};
 use crate::errors::db_error_to_response;
 use crate::state::{AppState, CollectionMeta};
@@ -51,6 +53,11 @@ pub async fn create_collection(
         .and_then(|v| serde_json::from_value::<SchemaConfig>(v).ok())
         .unwrap_or_default();
 
+    let settings = body
+        .settings
+        .and_then(|v| serde_json::from_value::<CollectionSettings>(v).ok())
+        .unwrap_or_default();
+
     let cmd = RaftCommand::CreateCollection {
         name: name.clone(),
         schema,
@@ -58,18 +65,40 @@ pub async fn create_collection(
 
     match state.raft_node.propose(cmd).await {
         Ok(_resp) => {
+            // Create the per-collection storage column family.
+            if let Err(e) = state.storage.create_collection(&name).await {
+                tracing::error!(collection = %name, error = %e, "failed to create storage CF");
+                return db_error_to_status_json(e);
+            }
+
+            // Create the per-collection Tantivy index.
+            if let Err(e) = state.index.create_collection_index(&name).await {
+                tracing::error!(collection = %name, error = %e, "failed to create collection index");
+                return db_error_to_status_json(e);
+            }
+
             let mut collections = state.collections.write().await;
             collections.insert(
                 name.clone(),
                 CollectionMeta {
                     name: name.clone(),
                     doc_count: 0,
+                    mapping: FieldMapping::new(),
+                    settings: settings.clone(),
                 },
             );
 
             (
                 StatusCode::OK,
-                Json(serde_json::to_value(CollectionInfoResponse { name, doc_count: 0 }).unwrap()),
+                Json(
+                    serde_json::to_value(CollectionInfoResponse {
+                        name,
+                        doc_count: 0,
+                        mapping: None,
+                        settings: serde_json::to_value(&settings).ok(),
+                    })
+                    .unwrap(),
+                ),
             )
         }
         Err(e) => db_error_to_status_json(e),
@@ -105,6 +134,16 @@ pub async fn delete_collection(
 
     match state.raft_node.propose(cmd).await {
         Ok(_) => {
+            // Drop the per-collection storage column family.
+            if let Err(e) = state.storage.drop_collection(&name).await {
+                tracing::warn!(collection = %name, error = %e, "failed to drop storage CF");
+            }
+
+            // Drop the per-collection Tantivy index.
+            if let Err(e) = state.index.drop_collection_index(&name).await {
+                tracing::warn!(collection = %name, error = %e, "failed to drop collection index");
+            }
+
             let mut collections = state.collections.write().await;
             collections.remove(&name);
             (
@@ -128,6 +167,8 @@ pub async fn list_collections(State(state): State<AppState>) -> impl IntoRespons
         .map(|meta| CollectionInfoResponse {
             name: meta.name.clone(),
             doc_count: meta.doc_count,
+            mapping: serde_json::to_value(&meta.mapping).ok(),
+            settings: serde_json::to_value(&meta.settings).ok(),
         })
         .collect();
     Json(list)
@@ -150,6 +191,8 @@ pub async fn get_collection(
                 serde_json::to_value(CollectionInfoResponse {
                     name: meta.name.clone(),
                     doc_count: meta.doc_count,
+                    mapping: serde_json::to_value(&meta.mapping).ok(),
+                    settings: serde_json::to_value(&meta.settings).ok(),
                 })
                 .unwrap(),
             ),

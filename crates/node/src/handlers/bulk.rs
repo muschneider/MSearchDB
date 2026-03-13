@@ -162,7 +162,8 @@ pub async fn bulk_index(
         // Flush insert batch when full
         if pending_docs.len() >= BATCH_SIZE {
             let batch = std::mem::take(&mut pending_docs);
-            let (batch_items, batch_errors, batch_count) = flush_insert_batch(&state, batch).await;
+            let (batch_items, batch_errors, batch_count) =
+                flush_insert_batch(&state, &collection, batch).await;
             items.extend(batch_items);
             if batch_errors {
                 has_errors = true;
@@ -174,7 +175,7 @@ pub async fn bulk_index(
     // Flush remaining insert batch
     if !pending_docs.is_empty() {
         let (batch_items, batch_errors, batch_count) =
-            flush_insert_batch(&state, pending_docs).await;
+            flush_insert_batch(&state, &collection, pending_docs).await;
         items.extend(batch_items);
         if batch_errors {
             has_errors = true;
@@ -186,6 +187,18 @@ pub async fn bulk_index(
     for (cmd, id) in pending_deletes {
         match state.raft_node.propose(cmd).await {
             Ok(_) => {
+                let doc_id = DocumentId::new(&id);
+                // Delete from collection-specific storage.
+                let _ = state
+                    .storage
+                    .delete_from_collection(&collection, &doc_id)
+                    .await;
+                // Delete from collection-specific index.
+                let _ = state
+                    .index
+                    .delete_document_from_collection(&collection, &doc_id)
+                    .await;
+
                 items.push(BulkItem {
                     action: "delete".into(),
                     id,
@@ -204,6 +217,9 @@ pub async fn bulk_index(
             }
         }
     }
+
+    // Commit collection index after all bulk operations.
+    let _ = state.index.commit_collection_index(&collection).await;
 
     // Update doc count
     {
@@ -226,44 +242,103 @@ pub async fn bulk_index(
 
 /// Flush a batch of documents as a single [`RaftCommand::BatchInsert`].
 ///
+/// After Raft consensus, each document is stored in the collection-specific
+/// RocksDB column family and indexed in the collection-specific Tantivy
+/// index with dynamic field mapping.
+///
 /// Returns `(per_item_results, had_errors, success_count)`.
 async fn flush_insert_batch(
     state: &AppState,
+    collection: &str,
     batch: Vec<(Document, String)>,
 ) -> (Vec<BulkItem>, bool, u64) {
     let ids: Vec<String> = batch.iter().map(|(_, id)| id.clone()).collect();
     let documents: Vec<Document> = batch.into_iter().map(|(doc, _)| doc).collect();
     let batch_len = documents.len();
 
-    match state.raft_node.propose_batch(documents).await {
+    match state.raft_node.propose_batch(documents.clone()).await {
         Ok(resp) => {
-            // All documents in the batch were applied atomically.
             let count = resp.affected_count;
-            let items: Vec<BulkItem> = ids
-                .into_iter()
-                .enumerate()
-                .map(|(idx, id)| {
-                    if idx < count {
-                        BulkItem {
+            let mut items: Vec<BulkItem> = Vec::with_capacity(batch_len);
+            let mut success_count: u64 = 0;
+            let mut has_errors = false;
+
+            // Get the current mapping for dynamic field detection.
+            let mut current_mapping = {
+                let collections = state.collections.read().await;
+                match collections.get(collection) {
+                    Some(meta) => meta.mapping.clone(),
+                    None => msearchdb_core::collection::FieldMapping::new(),
+                }
+            };
+
+            for (idx, (doc, id)) in documents.into_iter().zip(ids.into_iter()).enumerate() {
+                if idx >= count {
+                    // Documents beyond the success count failed inside the
+                    // state machine (storage/index error).
+                    has_errors = true;
+                    items.push(BulkItem {
+                        action: "index".into(),
+                        id,
+                        status: 500,
+                        error: Some("failed during batch apply".into()),
+                    });
+                    continue;
+                }
+
+                // Store in collection-specific storage.
+                if let Err(e) = state
+                    .storage
+                    .put_in_collection(collection, doc.clone())
+                    .await
+                {
+                    has_errors = true;
+                    items.push(BulkItem {
+                        action: "index".into(),
+                        id,
+                        status: 500,
+                        error: Some(format!("storage error: {}", e)),
+                    });
+                    continue;
+                }
+
+                // Index in collection-specific index with dynamic mapping.
+                match state
+                    .index
+                    .index_document_in_collection(collection, &doc, &current_mapping)
+                    .await
+                {
+                    Ok(updated_mapping) => {
+                        current_mapping = updated_mapping;
+                        success_count += 1;
+                        items.push(BulkItem {
                             action: "index".into(),
                             id,
                             status: 201,
                             error: None,
-                        }
-                    } else {
-                        // Documents beyond the success count failed inside the
-                        // state machine (storage/index error).
-                        BulkItem {
+                        });
+                    }
+                    Err(e) => {
+                        has_errors = true;
+                        items.push(BulkItem {
                             action: "index".into(),
                             id,
                             status: 500,
-                            error: Some("failed during batch apply".into()),
-                        }
+                            error: Some(format!("index error: {}", e)),
+                        });
                     }
-                })
-                .collect();
-            let has_errors = count < batch_len;
-            (items, has_errors, count as u64)
+                }
+            }
+
+            // Persist the updated mapping back to the collection metadata.
+            {
+                let mut collections = state.collections.write().await;
+                if let Some(meta) = collections.get_mut(collection) {
+                    meta.mapping = current_mapping;
+                }
+            }
+
+            (items, has_errors, success_count)
         }
         Err(e) => {
             // Entire batch rejected (e.g. not leader).

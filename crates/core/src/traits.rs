@@ -16,8 +16,9 @@ use async_trait::async_trait;
 use std::ops::RangeInclusive;
 
 use crate::cluster::NodeStatus;
+use crate::collection::FieldMapping;
 use crate::document::{Document, DocumentId};
-use crate::error::DbResult;
+use crate::error::{DbError, DbResult};
 use crate::query::{Query, SearchResult};
 
 // ---------------------------------------------------------------------------
@@ -54,6 +55,78 @@ pub trait StorageBackend: Send + Sync {
         range: RangeInclusive<DocumentId>,
         limit: usize,
     ) -> DbResult<Vec<Document>>;
+
+    // -- Collection-scoped operations ----------------------------------------
+
+    /// Create storage resources (e.g. a RocksDB column family) for a new
+    /// collection.
+    ///
+    /// The default implementation returns an error indicating the backend
+    /// does not support collection isolation.
+    async fn create_collection(&self, _collection: &str) -> DbResult<()> {
+        Err(DbError::InvalidInput(
+            "collection-scoped storage not supported by this backend".into(),
+        ))
+    }
+
+    /// Drop storage resources for a collection.
+    async fn drop_collection(&self, _collection: &str) -> DbResult<()> {
+        Err(DbError::InvalidInput(
+            "collection-scoped storage not supported by this backend".into(),
+        ))
+    }
+
+    /// Check whether storage resources exist for the named collection.
+    async fn collection_exists(&self, _collection: &str) -> DbResult<bool> {
+        Err(DbError::InvalidInput(
+            "collection-scoped storage not supported by this backend".into(),
+        ))
+    }
+
+    /// Retrieve a document by id from a specific collection's storage.
+    async fn get_from_collection(
+        &self,
+        _collection: &str,
+        _id: &DocumentId,
+    ) -> DbResult<Document> {
+        Err(DbError::InvalidInput(
+            "collection-scoped storage not supported by this backend".into(),
+        ))
+    }
+
+    /// Insert or update a document in a specific collection's storage.
+    async fn put_in_collection(
+        &self,
+        _collection: &str,
+        _document: Document,
+    ) -> DbResult<()> {
+        Err(DbError::InvalidInput(
+            "collection-scoped storage not supported by this backend".into(),
+        ))
+    }
+
+    /// Delete a document by id from a specific collection's storage.
+    async fn delete_from_collection(
+        &self,
+        _collection: &str,
+        _id: &DocumentId,
+    ) -> DbResult<()> {
+        Err(DbError::InvalidInput(
+            "collection-scoped storage not supported by this backend".into(),
+        ))
+    }
+
+    /// Scan documents within a specific collection's storage.
+    async fn scan_collection(
+        &self,
+        _collection: &str,
+        _range: RangeInclusive<DocumentId>,
+        _limit: usize,
+    ) -> DbResult<Vec<Document>> {
+        Err(DbError::InvalidInput(
+            "collection-scoped storage not supported by this backend".into(),
+        ))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -84,6 +157,70 @@ pub trait IndexBackend: Send + Sync {
     /// disk segments and reloads the reader.
     async fn commit_index(&self) -> DbResult<()> {
         Ok(())
+    }
+
+    // -- Collection-scoped operations ----------------------------------------
+
+    /// Create a new search index for the named collection.
+    ///
+    /// The default implementation returns an error indicating the backend
+    /// does not support per-collection indices.
+    async fn create_collection_index(&self, _collection: &str) -> DbResult<()> {
+        Err(DbError::InvalidInput(
+            "collection-scoped index not supported by this backend".into(),
+        ))
+    }
+
+    /// Drop the search index for the named collection.
+    async fn drop_collection_index(&self, _collection: &str) -> DbResult<()> {
+        Err(DbError::InvalidInput(
+            "collection-scoped index not supported by this backend".into(),
+        ))
+    }
+
+    /// Index a document within a specific collection's index.
+    ///
+    /// The implementation should use the collection's [`FieldMapping`] to
+    /// auto-detect and register field types (dynamic mapping).  Returns
+    /// an updated mapping if new fields were discovered.
+    async fn index_document_in_collection(
+        &self,
+        _collection: &str,
+        _document: &Document,
+        _mapping: &FieldMapping,
+    ) -> DbResult<FieldMapping> {
+        Err(DbError::InvalidInput(
+            "collection-scoped index not supported by this backend".into(),
+        ))
+    }
+
+    /// Search within a specific collection's index.
+    async fn search_collection(
+        &self,
+        _collection: &str,
+        _query: &Query,
+    ) -> DbResult<SearchResult> {
+        Err(DbError::InvalidInput(
+            "collection-scoped index not supported by this backend".into(),
+        ))
+    }
+
+    /// Delete a document from a specific collection's index.
+    async fn delete_document_from_collection(
+        &self,
+        _collection: &str,
+        _id: &DocumentId,
+    ) -> DbResult<()> {
+        Err(DbError::InvalidInput(
+            "collection-scoped index not supported by this backend".into(),
+        ))
+    }
+
+    /// Commit buffered writes for a specific collection's index.
+    async fn commit_collection_index(&self, _collection: &str) -> DbResult<()> {
+        Err(DbError::InvalidInput(
+            "collection-scoped index not supported by this backend".into(),
+        ))
     }
 }
 

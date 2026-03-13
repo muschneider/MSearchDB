@@ -29,14 +29,19 @@ use msearchdb_node::state::AppState;
 // ---------------------------------------------------------------------------
 
 /// In-memory storage backend for tests.
+///
+/// Supports both global and per-collection document storage.
 struct MemStorage {
     docs: Mutex<HashMap<String, Document>>,
+    /// Per-collection document storage: collection name → (doc id → Document).
+    collections: Mutex<HashMap<String, HashMap<String, Document>>>,
 }
 
 impl MemStorage {
     fn new() -> Self {
         Self {
             docs: Mutex::new(HashMap::new()),
+            collections: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -71,9 +76,65 @@ impl StorageBackend for MemStorage {
         let docs = self.docs.lock().await;
         Ok(docs.values().cloned().collect())
     }
+
+    // -- Collection-scoped operations ----------------------------------------
+
+    async fn create_collection(&self, collection: &str) -> DbResult<()> {
+        let mut cols = self.collections.lock().await;
+        cols.entry(collection.to_owned())
+            .or_insert_with(HashMap::new);
+        Ok(())
+    }
+
+    async fn drop_collection(&self, collection: &str) -> DbResult<()> {
+        let mut cols = self.collections.lock().await;
+        cols.remove(collection);
+        Ok(())
+    }
+
+    async fn get_from_collection(
+        &self,
+        collection: &str,
+        id: &DocumentId,
+    ) -> DbResult<Document> {
+        let cols = self.collections.lock().await;
+        let col = cols
+            .get(collection)
+            .ok_or_else(|| DbError::NotFound(format!("collection '{}' not found", collection)))?;
+        col.get(id.as_str())
+            .cloned()
+            .ok_or_else(|| DbError::NotFound(format!("document '{}' not found", id)))
+    }
+
+    async fn put_in_collection(
+        &self,
+        collection: &str,
+        document: Document,
+    ) -> DbResult<()> {
+        let mut cols = self.collections.lock().await;
+        let col = cols
+            .entry(collection.to_owned())
+            .or_insert_with(HashMap::new);
+        col.insert(document.id.as_str().to_owned(), document);
+        Ok(())
+    }
+
+    async fn delete_from_collection(
+        &self,
+        collection: &str,
+        id: &DocumentId,
+    ) -> DbResult<()> {
+        let mut cols = self.collections.lock().await;
+        if let Some(col) = cols.get_mut(collection) {
+            col.remove(id.as_str());
+        }
+        Ok(())
+    }
 }
 
 /// No-op index that returns empty results.
+///
+/// Supports collection-scoped operations as no-ops / empty results.
 struct EmptyIndex;
 
 #[async_trait]
@@ -87,6 +148,46 @@ impl IndexBackend for EmptyIndex {
     }
 
     async fn delete_document(&self, _id: &DocumentId) -> DbResult<()> {
+        Ok(())
+    }
+
+    // -- Collection-scoped operations ----------------------------------------
+
+    async fn create_collection_index(&self, _collection: &str) -> DbResult<()> {
+        Ok(())
+    }
+
+    async fn drop_collection_index(&self, _collection: &str) -> DbResult<()> {
+        Ok(())
+    }
+
+    async fn index_document_in_collection(
+        &self,
+        _collection: &str,
+        _document: &Document,
+        mapping: &msearchdb_core::collection::FieldMapping,
+    ) -> DbResult<msearchdb_core::collection::FieldMapping> {
+        // Return the mapping unchanged — no dynamic field detection in mock.
+        Ok(mapping.clone())
+    }
+
+    async fn search_collection(
+        &self,
+        _collection: &str,
+        _query: &Query,
+    ) -> DbResult<SearchResult> {
+        Ok(SearchResult::empty(1))
+    }
+
+    async fn delete_document_from_collection(
+        &self,
+        _collection: &str,
+        _id: &DocumentId,
+    ) -> DbResult<()> {
+        Ok(())
+    }
+
+    async fn commit_collection_index(&self, _collection: &str) -> DbResult<()> {
         Ok(())
     }
 }
@@ -116,6 +217,7 @@ async fn make_test_state() -> AppState {
         index,
         connection_pool: Arc::new(ConnectionPool::new()),
         collections: Arc::new(RwLock::new(HashMap::new())),
+        aliases: Arc::new(RwLock::new(HashMap::new())),
         api_key: None,
         metrics: Arc::new(msearchdb_node::metrics::Metrics::new()),
         local_node_id: config.node_id,
@@ -771,4 +873,528 @@ async fn test_auth_passes_with_correct_key() {
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+// ---------------------------------------------------------------------------
+// Schema conflict test
+// ---------------------------------------------------------------------------
+
+/// Index mock that performs dynamic field mapping and detects schema conflicts.
+///
+/// Unlike [`EmptyIndex`], this mock actually registers field types via
+/// [`FieldMapping::register_field`] so that schema conflicts surface when a
+/// field's type changes.
+struct MappingAwareIndex;
+
+#[async_trait]
+impl IndexBackend for MappingAwareIndex {
+    async fn index_document(&self, _doc: &Document) -> DbResult<()> {
+        Ok(())
+    }
+
+    async fn search(&self, _query: &Query) -> DbResult<SearchResult> {
+        Ok(SearchResult::empty(1))
+    }
+
+    async fn delete_document(&self, _id: &DocumentId) -> DbResult<()> {
+        Ok(())
+    }
+
+    async fn create_collection_index(&self, _collection: &str) -> DbResult<()> {
+        Ok(())
+    }
+
+    async fn drop_collection_index(&self, _collection: &str) -> DbResult<()> {
+        Ok(())
+    }
+
+    async fn index_document_in_collection(
+        &self,
+        _collection: &str,
+        document: &Document,
+        mapping: &msearchdb_core::collection::FieldMapping,
+    ) -> DbResult<msearchdb_core::collection::FieldMapping> {
+        use msearchdb_core::collection::MappedFieldType;
+        use msearchdb_core::document::FieldValue;
+
+        let mut updated = mapping.clone();
+        for (name, value) in &document.fields {
+            let mapped_type = match value {
+                FieldValue::Text(_) => MappedFieldType::Text,
+                FieldValue::Number(_) => MappedFieldType::Number,
+                FieldValue::Boolean(_) => MappedFieldType::Boolean,
+                FieldValue::Array(_) => MappedFieldType::Array,
+                _ => MappedFieldType::Text,
+            };
+            updated.register_field(name.clone(), mapped_type)?;
+        }
+        Ok(updated)
+    }
+
+    async fn search_collection(
+        &self,
+        _collection: &str,
+        _query: &Query,
+    ) -> DbResult<SearchResult> {
+        Ok(SearchResult::empty(1))
+    }
+
+    async fn delete_document_from_collection(
+        &self,
+        _collection: &str,
+        _id: &DocumentId,
+    ) -> DbResult<()> {
+        Ok(())
+    }
+
+    async fn commit_collection_index(&self, _collection: &str) -> DbResult<()> {
+        Ok(())
+    }
+}
+
+/// Helper that builds test state with the mapping-aware index.
+async fn make_schema_test_state() -> AppState {
+    let config = NodeConfig::default();
+    let storage: Arc<dyn StorageBackend> = Arc::new(MemStorage::new());
+    let index: Arc<dyn IndexBackend> = Arc::new(MappingAwareIndex);
+
+    let raft_node = RaftNode::new(&config, storage.clone(), index.clone())
+        .await
+        .unwrap();
+    let raft_node = Arc::new(raft_node);
+
+    let mut members = BTreeMap::new();
+    members.insert(config.node_id.as_u64(), openraft::BasicNode::default());
+    raft_node.initialize(members).await.unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    AppState {
+        raft_node,
+        storage,
+        index,
+        connection_pool: Arc::new(ConnectionPool::new()),
+        collections: Arc::new(RwLock::new(HashMap::new())),
+        aliases: Arc::new(RwLock::new(HashMap::new())),
+        api_key: None,
+        metrics: Arc::new(msearchdb_node::metrics::Metrics::new()),
+        local_node_id: config.node_id,
+        read_coordinator: Arc::new(msearchdb_core::read_coordinator::ReadCoordinator::new(
+            config.replication_factor,
+        )),
+    }
+}
+
+#[tokio::test]
+async fn test_schema_conflict_returns_409() {
+    let state = make_schema_test_state().await;
+    let app = msearchdb_node::build_router(state);
+
+    // Create collection
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri("/collections/schema_test")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    let (status, _) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Index a document with "price" as text
+    let doc1 = json!({
+        "id": "doc-text",
+        "fields": {
+            "title": "Widget",
+            "price": "cheap"
+        }
+    });
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/collections/schema_test/docs")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::to_string(&doc1).unwrap()))
+        .unwrap();
+    let (status, _) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Index a document with "price" as number — should conflict
+    let doc2 = json!({
+        "id": "doc-num",
+        "fields": {
+            "title": "Gadget",
+            "price": 42.99
+        }
+    });
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/collections/schema_test/docs")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::to_string(&doc2).unwrap()))
+        .unwrap();
+    let (status, body) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["error"]["type"], "schema_conflict");
+    assert!(body["error"]["reason"].as_str().unwrap().contains("price"));
+}
+
+#[tokio::test]
+async fn test_schema_evolution_new_fields_succeed() {
+    let state = make_schema_test_state().await;
+    let app = msearchdb_node::build_router(state);
+
+    // Create collection
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri("/collections/evolve_test")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    let (status, _) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Index with field "title"
+    let doc1 = json!({
+        "id": "evo-1",
+        "fields": { "title": "First" }
+    });
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/collections/evolve_test/docs")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::to_string(&doc1).unwrap()))
+        .unwrap();
+    let (status, _) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Index with a NEW field "category" — schema evolution, should succeed
+    let doc2 = json!({
+        "id": "evo-2",
+        "fields": { "title": "Second", "category": "widgets" }
+    });
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/collections/evolve_test/docs")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::to_string(&doc2).unwrap()))
+        .unwrap();
+    let (status, body) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(body["result"], "created");
+}
+
+// ---------------------------------------------------------------------------
+// Alias CRUD tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_create_and_get_alias() {
+    let state = make_test_state().await;
+    let app = msearchdb_node::build_router(state);
+
+    // Create a backing collection first
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri("/collections/products_v1")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    let (status, _) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Create alias
+    let alias_body = json!({ "collections": ["products_v1"] });
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri("/_aliases/products")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::to_string(&alias_body).unwrap()))
+        .unwrap();
+    let (status, body) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["name"], "products");
+    assert_eq!(body["collections"][0], "products_v1");
+
+    // Get alias
+    let req = Request::builder()
+        .uri("/_aliases/products")
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["name"], "products");
+    assert_eq!(body["collections"][0], "products_v1");
+}
+
+#[tokio::test]
+async fn test_delete_alias() {
+    let state = make_test_state().await;
+    let app = msearchdb_node::build_router(state);
+
+    // Create backing collection
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri("/collections/temp_col")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    let (status, _) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Create alias
+    let alias_body = json!({ "collections": ["temp_col"] });
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri("/_aliases/temp_alias")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::to_string(&alias_body).unwrap()))
+        .unwrap();
+    let (status, _) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Delete alias
+    let req = Request::builder()
+        .method(Method::DELETE)
+        .uri("/_aliases/temp_alias")
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["acknowledged"], true);
+
+    // Verify gone
+    let req = Request::builder()
+        .uri("/_aliases/temp_alias")
+        .body(Body::empty())
+        .unwrap();
+    let (status, _) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_list_aliases() {
+    let state = make_test_state().await;
+    let app = msearchdb_node::build_router(state);
+
+    // Create two backing collections
+    for name in &["col_x", "col_y"] {
+        let req = Request::builder()
+            .method(Method::PUT)
+            .uri(format!("/collections/{}", name))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+        let (status, _) = send(app.clone(), req).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    // Create two aliases
+    for (alias, col) in &[("alias_a", "col_x"), ("alias_b", "col_y")] {
+        let body = json!({ "collections": [col] });
+        let req = Request::builder()
+            .method(Method::PUT)
+            .uri(format!("/_aliases/{}", alias))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+        let (status, _) = send(app.clone(), req).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    // List
+    let req = Request::builder()
+        .uri("/_aliases")
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::OK);
+    let arr = body.as_array().unwrap();
+    assert_eq!(arr.len(), 2);
+}
+
+#[tokio::test]
+async fn test_alias_not_found_returns_404() {
+    let state = make_test_state().await;
+    let app = msearchdb_node::build_router(state);
+
+    let req = Request::builder()
+        .uri("/_aliases/nonexistent")
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = send(app, req).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(body["error"]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("not found"));
+}
+
+#[tokio::test]
+async fn test_alias_duplicate_returns_409() {
+    let state = make_test_state().await;
+    let app = msearchdb_node::build_router(state);
+
+    // Create backing collection
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri("/collections/dup_col")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    let (status, _) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Create alias
+    let body = json!({ "collections": ["dup_col"] });
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri("/_aliases/dup_alias")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::to_string(&body).unwrap()))
+        .unwrap();
+    let (status, _) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Try to create again — should conflict
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri("/_aliases/dup_alias")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::to_string(&body).unwrap()))
+        .unwrap();
+    let (status, _) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn test_alias_with_missing_target_returns_404() {
+    let state = make_test_state().await;
+    let app = msearchdb_node::build_router(state);
+
+    // Try to create alias pointing to non-existent collection
+    let body = json!({ "collections": ["no_such_collection"] });
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri("/_aliases/bad_alias")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::to_string(&body).unwrap()))
+        .unwrap();
+    let (status, body) = send(app, req).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(body["error"]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("not found"));
+}
+
+#[tokio::test]
+async fn test_search_via_alias() {
+    let state = make_test_state().await;
+    let app = msearchdb_node::build_router(state);
+
+    // Create collection
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri("/collections/alias_search_col")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    let (status, _) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Create alias pointing to that collection
+    let alias_body = json!({ "collections": ["alias_search_col"] });
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri("/_aliases/search_alias")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::to_string(&alias_body).unwrap()))
+        .unwrap();
+    let (status, _) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Search via alias (POST)
+    let search_body = json!({
+        "query": {"match": {"title": {"query": "hello"}}}
+    });
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/collections/search_alias/_search")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::to_string(&search_body).unwrap()))
+        .unwrap();
+    let (status, body) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["hits"]["total"]["value"].is_number());
+
+    // Search via alias (GET simple query)
+    let req = Request::builder()
+        .uri("/collections/search_alias/_search?q=hello")
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["hits"].is_object());
+}
+
+// ---------------------------------------------------------------------------
+// Per-collection settings tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_create_collection_with_custom_settings() {
+    let state = make_test_state().await;
+    let app = msearchdb_node::build_router(state);
+
+    // Create collection with custom settings
+    let create_body = json!({
+        "settings": {
+            "number_of_shards": 3,
+            "replication_factor": 2,
+            "default_analyzer": "whitespace"
+        }
+    });
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri("/collections/settings_test")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::to_string(&create_body).unwrap()))
+        .unwrap();
+    let (status, body) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["name"], "settings_test");
+    assert_eq!(body["settings"]["number_of_shards"], 3);
+    assert_eq!(body["settings"]["replication_factor"], 2);
+    assert_eq!(body["settings"]["default_analyzer"], "whitespace");
+
+    // GET the collection and verify settings are persisted
+    let req = Request::builder()
+        .uri("/collections/settings_test")
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["settings"]["number_of_shards"], 3);
+    assert_eq!(body["settings"]["replication_factor"], 2);
+    assert_eq!(body["settings"]["default_analyzer"], "whitespace");
+}
+
+#[tokio::test]
+async fn test_create_collection_default_settings() {
+    let state = make_test_state().await;
+    let app = msearchdb_node::build_router(state);
+
+    // Create collection without settings — should get defaults
+    let req = Request::builder()
+        .method(Method::PUT)
+        .uri("/collections/default_settings_test")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    let (status, body) = send(app.clone(), req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["name"], "default_settings_test");
+    // Default settings should be present
+    assert_eq!(body["settings"]["number_of_shards"], 1);
+    assert_eq!(body["settings"]["replication_factor"], 1);
+    assert_eq!(body["settings"]["default_analyzer"], "standard");
 }

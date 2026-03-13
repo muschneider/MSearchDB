@@ -269,6 +269,7 @@ async fn main() {
         index,
         connection_pool,
         collections: Arc::new(RwLock::new(HashMap::new())),
+        aliases: Arc::new(RwLock::new(HashMap::new())),
         api_key: config.api_key.clone(),
         metrics,
         local_node_id: config.node_id,

@@ -58,6 +58,32 @@ pub enum DbError {
     /// A read could not satisfy the requested consistency level.
     #[error("consistency error: {0}")]
     ConsistencyError(String),
+
+    /// A field type conflict was detected during schema evolution.
+    ///
+    /// Returned when a document contains a field whose type differs from the
+    /// type already recorded in the collection's [`FieldMapping`](crate::collection::FieldMapping).
+    #[error("schema conflict on field '{field}': existing type '{existing}', incoming type '{incoming}'")]
+    SchemaConflict {
+        /// The field name that caused the conflict.
+        field: String,
+        /// The type already recorded in the mapping.
+        existing: String,
+        /// The type of the incoming value that conflicts.
+        incoming: String,
+    },
+
+    /// The requested collection already exists.
+    #[error("collection already exists: {0}")]
+    CollectionAlreadyExists(String),
+
+    /// The requested alias already exists.
+    #[error("alias already exists: {0}")]
+    AliasAlreadyExists(String),
+
+    /// The requested alias was not found.
+    #[error("alias not found: {0}")]
+    AliasNotFound(String),
 }
 
 /// A convenience alias used throughout MSearchDB.
@@ -143,6 +169,43 @@ mod tests {
         let db_err: DbError = io_err.into();
         assert!(matches!(db_err, DbError::StorageError(_)));
         assert!(db_err.to_string().contains("file missing"));
+    }
+
+    #[test]
+    fn error_display_consistency() {
+        let err = DbError::ConsistencyError("quorum not met".into());
+        assert_eq!(err.to_string(), "consistency error: quorum not met");
+    }
+
+    #[test]
+    fn error_display_schema_conflict() {
+        let err = DbError::SchemaConflict {
+            field: "price".into(),
+            existing: "number".into(),
+            incoming: "text".into(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "schema conflict on field 'price': existing type 'number', incoming type 'text'"
+        );
+    }
+
+    #[test]
+    fn error_display_collection_already_exists() {
+        let err = DbError::CollectionAlreadyExists("products".into());
+        assert_eq!(err.to_string(), "collection already exists: products");
+    }
+
+    #[test]
+    fn error_display_alias_already_exists() {
+        let err = DbError::AliasAlreadyExists("current".into());
+        assert_eq!(err.to_string(), "alias already exists: current");
+    }
+
+    #[test]
+    fn error_display_alias_not_found() {
+        let err = DbError::AliasNotFound("missing_alias".into());
+        assert_eq!(err.to_string(), "alias not found: missing_alias");
     }
 
     #[test]

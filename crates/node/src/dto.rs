@@ -505,6 +505,12 @@ pub struct CreateCollectionRequest {
     /// Optional schema configuration.
     #[serde(default)]
     pub schema: Option<Value>,
+
+    /// Optional per-collection settings (shards, replication, analyzers).
+    ///
+    /// If omitted, defaults are applied (1 shard, RF 1, standard analyzer).
+    #[serde(default)]
+    pub settings: Option<Value>,
 }
 
 /// Response body for collection information.
@@ -515,6 +521,35 @@ pub struct CollectionInfoResponse {
 
     /// Number of documents in the collection.
     pub doc_count: u64,
+
+    /// Dynamic field mapping (field → type).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mapping: Option<serde_json::Value>,
+
+    /// Per-collection settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<serde_json::Value>,
+}
+
+// ---------------------------------------------------------------------------
+// Alias DTOs
+// ---------------------------------------------------------------------------
+
+/// Request body for creating or updating a collection alias.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CreateAliasRequest {
+    /// The collections the alias points to.
+    pub collections: Vec<String>,
+}
+
+/// Response body for alias information.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AliasInfoResponse {
+    /// The alias name.
+    pub name: String,
+
+    /// The backing collections.
+    pub collections: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -957,6 +992,8 @@ mod tests {
         let resp = CollectionInfoResponse {
             name: "articles".into(),
             doc_count: 1000,
+            mapping: None,
+            settings: None,
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("articles"));

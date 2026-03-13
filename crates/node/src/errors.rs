@@ -37,6 +37,41 @@ pub fn db_error_to_response(err: DbError) -> (StatusCode, ErrorResponse) {
             StatusCode::BAD_REQUEST,
             ErrorResponse::bad_request(msg.clone()),
         ),
+        DbError::SchemaConflict {
+            field,
+            existing,
+            incoming,
+        } => (
+            StatusCode::CONFLICT,
+            ErrorResponse::new(
+                409,
+                "schema_conflict",
+                format!(
+                    "field '{}' has type '{}', cannot change to '{}'",
+                    field, existing, incoming
+                ),
+            ),
+        ),
+        DbError::CollectionAlreadyExists(name) => (
+            StatusCode::CONFLICT,
+            ErrorResponse::new(
+                409,
+                "resource_already_exists",
+                format!("collection '{}' already exists", name),
+            ),
+        ),
+        DbError::AliasAlreadyExists(name) => (
+            StatusCode::CONFLICT,
+            ErrorResponse::new(
+                409,
+                "resource_already_exists",
+                format!("alias '{}' already exists", name),
+            ),
+        ),
+        DbError::AliasNotFound(name) => (
+            StatusCode::NOT_FOUND,
+            ErrorResponse::not_found(format!("alias '{}' not found", name)),
+        ),
         DbError::ConsensusError(msg) if msg.contains("not leader") || msg.contains("forward") => {
             // The node is not the leader — return 307 with a hint.
             (
@@ -137,5 +172,51 @@ mod tests {
         let (status, resp) = db_error_to_response(DbError::IndexError("corrupt".into()));
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(resp.status, 500);
+    }
+
+    #[test]
+    fn schema_conflict_maps_to_409() {
+        let (status, resp) = db_error_to_response(DbError::SchemaConflict {
+            field: "price".into(),
+            existing: "Text".into(),
+            incoming: "Number".into(),
+        });
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(resp.status, 409);
+        assert_eq!(resp.error.error_type, "schema_conflict");
+        assert!(resp.error.reason.contains("price"));
+    }
+
+    #[test]
+    fn collection_already_exists_maps_to_409() {
+        let (status, resp) =
+            db_error_to_response(DbError::CollectionAlreadyExists("products".into()));
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(resp.status, 409);
+        assert_eq!(resp.error.error_type, "resource_already_exists");
+    }
+
+    #[test]
+    fn alias_already_exists_maps_to_409() {
+        let (status, resp) = db_error_to_response(DbError::AliasAlreadyExists("live".into()));
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(resp.status, 409);
+        assert_eq!(resp.error.error_type, "resource_already_exists");
+    }
+
+    #[test]
+    fn alias_not_found_maps_to_404() {
+        let (status, resp) = db_error_to_response(DbError::AliasNotFound("missing_alias".into()));
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(resp.status, 404);
+        assert_eq!(resp.error.error_type, "not_found");
+    }
+
+    #[test]
+    fn consistency_error_maps_to_503() {
+        let (status, resp) =
+            db_error_to_response(DbError::ConsistencyError("quorum not met".into()));
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(resp.status, 503);
     }
 }

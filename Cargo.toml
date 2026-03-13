@@ -45,7 +45,7 @@ dashmap = "5"
 async-trait = "0.1"
 
 # Storage engine
-rocksdb = "0.24"
+rocksdb = { version = "0.24", features = ["multi-threaded-cf"] }
 bytes = "1"
 rmp-serde = "1"
 crossbeam-skiplist = "0.1"

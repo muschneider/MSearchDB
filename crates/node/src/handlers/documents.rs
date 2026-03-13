@@ -47,20 +47,66 @@ pub async fn index_document(
         }
     }
 
+    // Get the current mapping for dynamic field detection.
+    let current_mapping = {
+        let collections = state.collections.read().await;
+        match collections.get(&collection) {
+            Some(meta) => meta.mapping.clone(),
+            None => {
+                let resp =
+                    ErrorResponse::not_found(format!("collection '{}' not found", collection));
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::to_value(resp).unwrap()),
+                );
+            }
+        }
+    };
+
     let doc = request_to_document(body);
     let doc_id = doc.id.as_str().to_owned();
 
-    let cmd = RaftCommand::InsertDocument { document: doc };
+    let cmd = RaftCommand::InsertDocument {
+        document: doc.clone(),
+    };
 
     match state.raft_node.propose(cmd).await {
         Ok(_resp) => {
-            // Increment doc count
+            // Store in collection-specific storage.
+            if let Err(e) = state
+                .storage
+                .put_in_collection(&collection, doc.clone())
+                .await
             {
-                let mut collections = state.collections.write().await;
-                if let Some(meta) = collections.get_mut(&collection) {
-                    meta.doc_count += 1;
+                let (status, resp) = db_error_to_response(e);
+                return (status, Json(serde_json::to_value(resp).unwrap()));
+            }
+
+            // Index in collection-specific index with dynamic mapping.
+            match state
+                .index
+                .index_document_in_collection(&collection, &doc, &current_mapping)
+                .await
+            {
+                Ok(updated_mapping) => {
+                    // Commit the index writes.
+                    let _ = state.index.commit_collection_index(&collection).await;
+
+                    // Update mapping and doc count.
+                    {
+                        let mut collections = state.collections.write().await;
+                        if let Some(meta) = collections.get_mut(&collection) {
+                            meta.doc_count += 1;
+                            meta.mapping = updated_mapping;
+                        }
+                    }
+                }
+                Err(e) => {
+                    let (status, resp) = db_error_to_response(e);
+                    return (status, Json(serde_json::to_value(resp).unwrap()));
                 }
             }
+
             let resp = IndexDocumentResponse {
                 id: doc_id,
                 result: "created".into(),
@@ -100,6 +146,22 @@ pub async fn upsert_document(
         }
     }
 
+    // Get the current mapping for dynamic field detection.
+    let current_mapping = {
+        let collections = state.collections.read().await;
+        match collections.get(&collection) {
+            Some(meta) => meta.mapping.clone(),
+            None => {
+                let resp =
+                    ErrorResponse::not_found(format!("collection '{}' not found", collection));
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::to_value(resp).unwrap()),
+                );
+            }
+        }
+    };
+
     let doc_id = DocumentId::new(&id);
     let mut doc = Document::new(doc_id);
     for (key, val) in body.fields {
@@ -108,10 +170,47 @@ pub async fn upsert_document(
         }
     }
 
-    let cmd = RaftCommand::UpdateDocument { document: doc };
+    let cmd = RaftCommand::UpdateDocument {
+        document: doc.clone(),
+    };
 
     match state.raft_node.propose(cmd).await {
         Ok(_resp) => {
+            // Update in collection-specific storage.
+            if let Err(e) = state
+                .storage
+                .put_in_collection(&collection, doc.clone())
+                .await
+            {
+                let (status, resp) = db_error_to_response(e);
+                return (status, Json(serde_json::to_value(resp).unwrap()));
+            }
+
+            // Delete old version from index, then index new version.
+            let _ = state
+                .index
+                .delete_document_from_collection(&collection, &doc.id)
+                .await;
+
+            match state
+                .index
+                .index_document_in_collection(&collection, &doc, &current_mapping)
+                .await
+            {
+                Ok(updated_mapping) => {
+                    let _ = state.index.commit_collection_index(&collection).await;
+
+                    let mut collections = state.collections.write().await;
+                    if let Some(meta) = collections.get_mut(&collection) {
+                        meta.mapping = updated_mapping;
+                    }
+                }
+                Err(e) => {
+                    let (status, resp) = db_error_to_response(e);
+                    return (status, Json(serde_json::to_value(resp).unwrap()));
+                }
+            }
+
             let resp = IndexDocumentResponse {
                 id,
                 result: "updated".into(),
@@ -162,10 +261,15 @@ pub async fn get_document(
     let doc_id = DocumentId::new(&id);
 
     // In single-node mode, the local storage is the only replica.
-    // We read from local storage and construct a ReplicaResponse, then
-    // run it through the ReadCoordinator so that the consistency-level
-    // validation and vector-clock resolution are always exercised.
-    match state.storage.get(&doc_id).await {
+    // We read from collection-specific storage and construct a
+    // ReplicaResponse, then run it through the ReadCoordinator so that
+    // the consistency-level validation and vector-clock resolution are
+    // always exercised.
+    match state
+        .storage
+        .get_from_collection(&collection, &doc_id)
+        .await
+    {
         Ok(doc) => {
             let replica_response = ReplicaResponse {
                 node_id: state.local_node_id,
@@ -252,10 +356,25 @@ pub async fn delete_document(
     }
 
     let doc_id = DocumentId::new(&id);
-    let cmd = RaftCommand::DeleteDocument { id: doc_id };
+    let cmd = RaftCommand::DeleteDocument {
+        id: doc_id.clone(),
+    };
 
     match state.raft_node.propose(cmd).await {
         Ok(_) => {
+            // Delete from collection-specific storage.
+            let _ = state
+                .storage
+                .delete_from_collection(&collection, &doc_id)
+                .await;
+
+            // Delete from collection-specific index.
+            let _ = state
+                .index
+                .delete_document_from_collection(&collection, &doc_id)
+                .await;
+            let _ = state.index.commit_collection_index(&collection).await;
+
             // Decrement doc count
             {
                 let mut collections = state.collections.write().await;

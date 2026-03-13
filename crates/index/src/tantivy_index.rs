@@ -49,6 +49,7 @@ use tantivy::query::{
 use tantivy::schema::{IndexRecordOption, Schema, Value};
 use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, Searcher, TantivyDocument, Term};
 
+use msearchdb_core::collection::FieldMapping;
 use msearchdb_core::document::{Document, DocumentId, FieldValue};
 use msearchdb_core::error::{DbError, DbResult};
 use msearchdb_core::query::{
@@ -102,6 +103,8 @@ pub struct TantivyIndex {
     schema: Arc<Schema>,
     /// Maps field names to Tantivy `Field` handles for fast lookup.
     field_map: FieldMap,
+    /// Per-collection index manager for collection-scoped operations.
+    collection_manager: crate::collection_index::CollectionIndexManager,
 }
 
 impl TantivyIndex {
@@ -147,12 +150,18 @@ impl TantivyIndex {
             .try_into()
             .map_err(|e| DbError::IndexError(format!("failed to create index reader: {}", e)))?;
 
+        // Derive collection index base path from the index path.
+        let collection_base = index_path.join("collections");
+        let collection_manager =
+            crate::collection_index::CollectionIndexManager::new(&collection_base);
+
         Ok(Self {
             index: Arc::new(index),
             writer: Arc::new(Mutex::new(writer)),
             reader,
             schema,
             field_map,
+            collection_manager,
         })
     }
 
@@ -179,12 +188,15 @@ impl TantivyIndex {
             .try_into()
             .map_err(|e| DbError::IndexError(format!("failed to create index reader: {}", e)))?;
 
+        let collection_manager = crate::collection_index::CollectionIndexManager::new_in_ram();
+
         Ok(Self {
             index: Arc::new(index),
             writer: Arc::new(Mutex::new(writer)),
             reader,
             schema,
             field_map,
+            collection_manager,
         })
     }
 
@@ -201,6 +213,11 @@ impl TantivyIndex {
     /// Get the field map.
     pub fn field_map(&self) -> &FieldMap {
         &self.field_map
+    }
+
+    /// Get a reference to the per-collection index manager.
+    pub fn collection_manager(&self) -> &crate::collection_index::CollectionIndexManager {
+        &self.collection_manager
     }
 
     // -----------------------------------------------------------------------
@@ -777,6 +794,52 @@ impl IndexBackend for TantivyIndex {
         })
         .await
         .map_err(|e| DbError::IndexError(format!("spawn_blocking: {}", e)))?
+    }
+
+    // -- Collection-scoped operations ----------------------------------------
+
+    /// Create a per-collection Tantivy index.
+    async fn create_collection_index(&self, collection: &str) -> DbResult<()> {
+        self.collection_manager.create_collection(collection)
+    }
+
+    /// Drop the per-collection Tantivy index.
+    async fn drop_collection_index(&self, collection: &str) -> DbResult<()> {
+        self.collection_manager.drop_collection(collection)
+    }
+
+    /// Index a document within a collection, auto-detecting field types.
+    async fn index_document_in_collection(
+        &self,
+        collection: &str,
+        document: &Document,
+        mapping: &FieldMapping,
+    ) -> DbResult<FieldMapping> {
+        self.collection_manager
+            .index_document(collection, document, mapping)
+    }
+
+    /// Search within a collection's index.
+    async fn search_collection(
+        &self,
+        collection: &str,
+        query: &Query,
+    ) -> DbResult<SearchResult> {
+        self.collection_manager.search(collection, query)
+    }
+
+    /// Delete a document from a collection's index.
+    async fn delete_document_from_collection(
+        &self,
+        collection: &str,
+        id: &DocumentId,
+    ) -> DbResult<()> {
+        self.collection_manager.delete_document(collection, id)
+    }
+
+    /// Commit buffered writes for a collection's index.
+    async fn commit_collection_index(&self, collection: &str) -> DbResult<()> {
+        self.collection_manager.commit(collection)
     }
 }
 

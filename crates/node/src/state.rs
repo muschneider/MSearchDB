@@ -25,6 +25,7 @@ use tokio::sync::RwLock;
 
 use msearchdb_consensus::raft_node::RaftNode;
 use msearchdb_core::cluster::NodeId;
+use msearchdb_core::collection::{CollectionAlias, CollectionSettings};
 use msearchdb_core::read_coordinator::ReadCoordinator;
 use msearchdb_core::traits::{IndexBackend, StorageBackend};
 use msearchdb_network::connection_pool::ConnectionPool;
@@ -59,6 +60,12 @@ pub struct AppState {
     /// registry protected by a read-write lock.
     pub collections: Arc<RwLock<HashMap<String, CollectionMeta>>>,
 
+    /// Map of alias names to their definitions.
+    ///
+    /// Aliases map a single name to one or more backing collections.
+    /// Queries against an alias fan out across all targets and merge results.
+    pub aliases: Arc<RwLock<HashMap<String, CollectionAlias>>>,
+
     /// Optional API key for authentication.
     /// If `None`, authentication is disabled.
     pub api_key: Option<String>,
@@ -74,6 +81,10 @@ pub struct AppState {
 }
 
 /// Metadata for a single collection.
+///
+/// Includes the dynamic field mapping that tracks field names → types,
+/// and the per-collection settings (shards, replication, analyzers).
+/// This mapping is updated as new documents are indexed (schema evolution).
 #[derive(Clone, Debug)]
 pub struct CollectionMeta {
     /// Human-readable collection name.
@@ -81,4 +92,14 @@ pub struct CollectionMeta {
 
     /// Number of documents indexed (approximate).
     pub doc_count: u64,
+
+    /// Dynamic field mapping (field names → types).
+    ///
+    /// Updated each time a document is indexed with previously unseen fields.
+    pub mapping: msearchdb_core::collection::FieldMapping,
+
+    /// Per-collection settings (shards, replication factor, analyzers).
+    ///
+    /// Specified at creation time and immutable once set.
+    pub settings: CollectionSettings,
 }

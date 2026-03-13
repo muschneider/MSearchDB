@@ -91,6 +91,20 @@ pub enum RaftCommand {
         /// The documents to insert.
         documents: Vec<Document>,
     },
+
+    /// Create a collection alias that points to one or more collections.
+    CreateAlias {
+        /// The alias name.
+        alias: String,
+        /// The collections the alias points to.
+        collections: Vec<String>,
+    },
+
+    /// Delete a collection alias.
+    DeleteAlias {
+        /// The alias name to remove.
+        alias: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -294,5 +308,28 @@ mod tests {
         assert!(batch.success);
         assert!(batch.document_id.is_none());
         assert_eq!(batch.affected_count, 100);
+    }
+
+    #[test]
+    fn raft_command_create_alias_serde_roundtrip() {
+        let cmd = RaftCommand::CreateAlias {
+            alias: "latest".into(),
+            collections: vec!["products_v1".into(), "products_v2".into()],
+        };
+
+        let json = serde_json::to_string(&cmd).unwrap();
+        let back: RaftCommand = serde_json::from_str(&json).unwrap();
+        assert_eq!(cmd, back);
+    }
+
+    #[test]
+    fn raft_command_delete_alias_serde_roundtrip() {
+        let cmd = RaftCommand::DeleteAlias {
+            alias: "latest".into(),
+        };
+
+        let json = serde_json::to_string(&cmd).unwrap();
+        let back: RaftCommand = serde_json::from_str(&json).unwrap();
+        assert_eq!(cmd, back);
     }
 }

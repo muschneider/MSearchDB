@@ -177,6 +177,16 @@ impl DbStateMachine {
                     RaftResponse::fail()
                 }
             }
+
+            RaftCommand::CreateAlias { alias, collections } => {
+                tracing::info!(alias = %alias, targets = ?collections, "alias created");
+                RaftResponse::ok_no_id()
+            }
+
+            RaftCommand::DeleteAlias { alias } => {
+                tracing::info!(alias = %alias, "alias deleted");
+                RaftResponse::ok_no_id()
+            }
         }
     }
 }
@@ -557,5 +567,27 @@ mod tests {
         let resp = sm.apply_command(&cmd).await;
         // Empty batch is a no-op — zero affected but still "success" (all 0 of 0 succeeded).
         assert!(resp.success || resp.affected_count == 0);
+    }
+
+    #[tokio::test]
+    async fn apply_create_alias_succeeds() {
+        let sm = make_sm();
+        let cmd = RaftCommand::CreateAlias {
+            alias: "latest".into(),
+            collections: vec!["products_v1".into(), "products_v2".into()],
+        };
+        let resp = sm.apply_command(&cmd).await;
+        assert!(resp.success);
+        assert!(resp.document_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn apply_delete_alias_succeeds() {
+        let sm = make_sm();
+        let cmd = RaftCommand::DeleteAlias {
+            alias: "latest".into(),
+        };
+        let resp = sm.apply_command(&cmd).await;
+        assert!(resp.success);
     }
 }

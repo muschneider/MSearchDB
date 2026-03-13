@@ -118,6 +118,15 @@ pub fn build_router(state: AppState) -> Router {
             post(handlers::admin::refresh_collection),
         );
 
+    let alias_routes = Router::new()
+        .route("/_aliases", get(handlers::aliases::list_aliases))
+        .route(
+            "/_aliases/:name",
+            put(handlers::aliases::create_alias)
+                .get(handlers::aliases::get_alias)
+                .delete(handlers::aliases::delete_alias),
+        );
+
     let cluster_routes = Router::new()
         .route("/_cluster/health", get(handlers::cluster::cluster_health))
         .route("/_cluster/state", get(handlers::cluster::cluster_state))
@@ -131,6 +140,7 @@ pub fn build_router(state: AppState) -> Router {
     // Merge all route groups
     let app = Router::new()
         .merge(collection_routes)
+        .merge(alias_routes)
         .merge(cluster_routes)
         .merge(admin_routes)
         .with_state(state.clone());

@@ -8,10 +8,12 @@
 //! | [`documents`] | `POST/PUT/GET/DELETE /collections/{name}/docs/{id}` |
 //! | [`search`] | `POST/GET /collections/{name}/_search` |
 //! | [`bulk`] | `POST /collections/{name}/docs/_bulk` |
+//! | [`aliases`] | `PUT/DELETE/GET /_aliases/{name}`, `GET /_aliases` |
 //! | [`cluster`] | `GET /_cluster/health`, `GET /_cluster/state`, `GET /_nodes` |
 //! | [`admin`] | `POST /_refresh`, `GET /_stats` |
 
 pub mod admin;
+pub mod aliases;
 pub mod bulk;
 pub mod cluster;
 pub mod collections;

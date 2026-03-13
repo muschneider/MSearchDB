@@ -34,9 +34,10 @@ pub async fn refresh_collection(
         }
     }
 
-    // Explicitly commit the index so buffered writes become visible to
-    // searchers immediately (rather than waiting for the next Raft apply cycle).
-    if let Err(e) = state.index.commit_index().await {
+    // Explicitly commit the collection-specific index so buffered writes
+    // become visible to searchers immediately (rather than waiting for the
+    // next Raft apply cycle).
+    if let Err(e) = state.index.commit_collection_index(&collection).await {
         tracing::error!(collection = %collection, error = %e, "index commit failed");
         let resp = ErrorResponse::internal(format!("index commit failed: {}", e));
         return (
