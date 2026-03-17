@@ -24,7 +24,8 @@ use serde_json::Value;
 
 use msearchdb_core::document::{Document, DocumentId, FieldValue};
 use msearchdb_core::query::{
-    BoolQuery, FullTextQuery, Operator, Query, RangeQuery, ScoredDocument, SearchResult, TermQuery,
+    Aggregation, BoolQuery, CollapseOptions, FullTextQuery, Operator, Query, RangeQuery,
+    ScoredDocument, SearchOptions, SearchResult, SortClause, SortOrder, SortValue, TermQuery,
 };
 
 // ---------------------------------------------------------------------------
@@ -136,6 +137,204 @@ pub struct BoolQueryDsl {
     /// None of these queries may match.
     #[serde(default)]
     pub must_not: Vec<QueryDsl>,
+}
+
+// ---------------------------------------------------------------------------
+// AggregationDsl — JSON aggregation definition
+// ---------------------------------------------------------------------------
+
+/// A single aggregation definition from the REST API.
+///
+/// Mirrors Elasticsearch-style JSON:
+/// ```json
+/// { "terms": { "field": "category", "size": 10 } }
+/// { "avg": { "field": "price" } }
+/// ```
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AggregationDsl {
+    /// Terms aggregation.
+    Terms(AggTermsDsl),
+    /// Range aggregation.
+    Range(AggRangeDsl),
+    /// Date histogram aggregation.
+    DateHistogram(AggDateHistogramDsl),
+    /// Average metric.
+    Avg(AggFieldDsl),
+    /// Sum metric.
+    Sum(AggFieldDsl),
+    /// Min metric.
+    Min(AggFieldDsl),
+    /// Max metric.
+    Max(AggFieldDsl),
+    /// Cardinality metric.
+    Cardinality(AggFieldDsl),
+}
+
+/// Terms aggregation DSL.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AggTermsDsl {
+    /// The field to aggregate on.
+    pub field: String,
+    /// Maximum number of buckets.
+    #[serde(default = "default_agg_size")]
+    pub size: usize,
+}
+
+fn default_agg_size() -> usize {
+    10
+}
+
+/// Range aggregation DSL.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AggRangeDsl {
+    /// The numeric field.
+    pub field: String,
+    /// The range bucket definitions.
+    pub ranges: Vec<AggRangeBucketDsl>,
+}
+
+/// A single range bucket definition.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AggRangeBucketDsl {
+    /// Optional key for this bucket.
+    #[serde(default)]
+    pub key: Option<String>,
+    /// Inclusive lower bound.
+    #[serde(default)]
+    pub from: Option<f64>,
+    /// Exclusive upper bound.
+    #[serde(default)]
+    pub to: Option<f64>,
+}
+
+/// Date histogram aggregation DSL.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AggDateHistogramDsl {
+    /// The timestamp field.
+    pub field: String,
+    /// Calendar interval: `"second"`, `"minute"`, `"hour"`, `"day"`,
+    /// `"week"`, or `"month"`.
+    pub interval: String,
+}
+
+/// Simple field-only aggregation DSL (for avg, sum, min, max, cardinality).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AggFieldDsl {
+    /// The field to aggregate on.
+    pub field: String,
+}
+
+/// Collapse / deduplication DSL.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CollapseDsl {
+    /// The field to collapse on.
+    pub field: String,
+}
+
+impl AggregationDsl {
+    /// Convert this DSL aggregation into the core [`Aggregation`] type.
+    pub fn into_core_aggregation(self) -> Aggregation {
+        use msearchdb_core::query::{DateInterval, RangeBucketDef};
+
+        match self {
+            AggregationDsl::Terms(t) => Aggregation::Terms {
+                field: t.field,
+                size: t.size,
+            },
+            AggregationDsl::Range(r) => Aggregation::Range {
+                field: r.field,
+                ranges: r
+                    .ranges
+                    .into_iter()
+                    .map(|b| RangeBucketDef {
+                        key: b.key,
+                        from: b.from,
+                        to: b.to,
+                    })
+                    .collect(),
+            },
+            AggregationDsl::DateHistogram(dh) => {
+                let interval = match dh.interval.to_lowercase().as_str() {
+                    "second" => DateInterval::Second,
+                    "minute" => DateInterval::Minute,
+                    "hour" => DateInterval::Hour,
+                    "day" => DateInterval::Day,
+                    "week" => DateInterval::Week,
+                    "month" => DateInterval::Month,
+                    _ => DateInterval::Day, // default
+                };
+                Aggregation::DateHistogram {
+                    field: dh.field,
+                    interval,
+                }
+            }
+            AggregationDsl::Avg(a) => Aggregation::Avg { field: a.field },
+            AggregationDsl::Sum(a) => Aggregation::Sum { field: a.field },
+            AggregationDsl::Min(a) => Aggregation::Min { field: a.field },
+            AggregationDsl::Max(a) => Aggregation::Max { field: a.field },
+            AggregationDsl::Cardinality(a) => Aggregation::Cardinality { field: a.field },
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SearchRequest → SearchOptions conversion
+// ---------------------------------------------------------------------------
+
+impl SearchRequest {
+    /// Build a [`SearchOptions`] from the request fields.
+    pub fn to_search_options(&self) -> SearchOptions {
+        let sort: Vec<SortClause> = self
+            .sort
+            .as_ref()
+            .map(|fields| {
+                fields
+                    .iter()
+                    .map(|sf| SortClause {
+                        field: sf.field.clone(),
+                        order: match sf.order.to_lowercase().as_str() {
+                            "asc" => SortOrder::Asc,
+                            _ => SortOrder::Desc,
+                        },
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let aggregations: HashMap<String, Aggregation> = self
+            .aggs
+            .as_ref()
+            .map(|aggs| {
+                aggs.iter()
+                    .map(|(name, dsl)| (name.clone(), dsl.clone().into_core_aggregation()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let search_after: Option<Vec<SortValue>> = self.search_after.as_ref().map(|vals| {
+            vals.iter()
+                .map(|v| match v {
+                    Value::Number(n) => SortValue::Number(n.as_f64().unwrap_or(0.0)),
+                    Value::String(s) => SortValue::Text(s.clone()),
+                    _ => SortValue::Text(v.to_string()),
+                })
+                .collect()
+        });
+
+        let collapse = self.collapse.as_ref().map(|c| CollapseOptions {
+            field: c.field.clone(),
+        });
+
+        SearchOptions {
+            size: self.size.unwrap_or(10),
+            from: self.from.unwrap_or(0),
+            sort,
+            search_after,
+            aggregations,
+            collapse,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -274,6 +473,20 @@ pub struct SearchRequest {
     /// Optional sort specification.
     #[serde(default)]
     pub sort: Option<Vec<SortField>>,
+
+    /// Named aggregations to compute over matching documents.
+    #[serde(default)]
+    pub aggs: Option<HashMap<String, AggregationDsl>>,
+
+    /// Cursor for deep pagination (search_after).
+    ///
+    /// Values must correspond 1:1 with the `sort` specification.
+    #[serde(default)]
+    pub search_after: Option<Vec<Value>>,
+
+    /// Collapse / deduplicate results by a field.
+    #[serde(default)]
+    pub collapse: Option<CollapseDsl>,
 }
 
 fn default_size() -> Option<usize> {
@@ -298,6 +511,10 @@ pub struct Hit {
     /// Optional highlight fragments.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub highlight: Option<Value>,
+
+    /// Sort values for this hit (used as cursor for `search_after`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sort: Vec<Value>,
 }
 
 /// Total hit count metadata.
@@ -331,6 +548,10 @@ pub struct SearchResponse {
 
     /// Whether the search timed out.
     pub timed_out: bool,
+
+    /// Named aggregation results.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub aggregations: HashMap<String, Value>,
 }
 
 impl SearchResponse {
@@ -340,6 +561,16 @@ impl SearchResponse {
             .documents
             .into_iter()
             .map(scored_doc_to_hit)
+            .collect();
+
+        // Convert aggregation results to JSON values.
+        let aggregations: HashMap<String, Value> = result
+            .aggregations
+            .into_iter()
+            .map(|(name, agg_result)| {
+                let val = serde_json::to_value(agg_result).unwrap_or(Value::Null);
+                (name, val)
+            })
             .collect();
 
         Self {
@@ -352,6 +583,7 @@ impl SearchResponse {
             },
             took: result.took_ms,
             timed_out: false,
+            aggregations,
         }
     }
 }
@@ -359,11 +591,23 @@ impl SearchResponse {
 /// Convert a [`ScoredDocument`] to a [`Hit`].
 fn scored_doc_to_hit(scored: ScoredDocument) -> Hit {
     let source = fields_to_value(&scored.document.fields);
+    let sort: Vec<Value> = scored
+        .sort
+        .iter()
+        .map(|sv| match sv {
+            SortValue::Number(n) => serde_json::Number::from_f64(*n)
+                .map(Value::Number)
+                .unwrap_or(Value::Null),
+            SortValue::Text(s) => Value::String(s.clone()),
+            _ => Value::Null,
+        })
+        .collect();
     Hit {
         id: scored.document.id.as_str().to_owned(),
         score: scored.score,
         source,
         highlight: None,
+        sort,
     }
 }
 
@@ -822,9 +1066,11 @@ mod tests {
                 document: Document::new(DocumentId::new("d1"))
                     .with_field("title", FieldValue::Text("hello".into())),
                 score: 1.5,
+                sort: Vec::new(),
             }],
             total: 1,
             took_ms: 5,
+            aggregations: HashMap::new(),
         };
 
         let resp = SearchResponse::from_search_result(result);

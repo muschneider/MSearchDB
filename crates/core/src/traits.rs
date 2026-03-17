@@ -19,7 +19,7 @@ use crate::cluster::NodeStatus;
 use crate::collection::FieldMapping;
 use crate::document::{Document, DocumentId};
 use crate::error::{DbError, DbResult};
-use crate::query::{Query, SearchResult};
+use crate::query::{Query, SearchOptions, SearchResult};
 
 // ---------------------------------------------------------------------------
 // StorageBackend
@@ -84,33 +84,21 @@ pub trait StorageBackend: Send + Sync {
     }
 
     /// Retrieve a document by id from a specific collection's storage.
-    async fn get_from_collection(
-        &self,
-        _collection: &str,
-        _id: &DocumentId,
-    ) -> DbResult<Document> {
+    async fn get_from_collection(&self, _collection: &str, _id: &DocumentId) -> DbResult<Document> {
         Err(DbError::InvalidInput(
             "collection-scoped storage not supported by this backend".into(),
         ))
     }
 
     /// Insert or update a document in a specific collection's storage.
-    async fn put_in_collection(
-        &self,
-        _collection: &str,
-        _document: Document,
-    ) -> DbResult<()> {
+    async fn put_in_collection(&self, _collection: &str, _document: Document) -> DbResult<()> {
         Err(DbError::InvalidInput(
             "collection-scoped storage not supported by this backend".into(),
         ))
     }
 
     /// Delete a document by id from a specific collection's storage.
-    async fn delete_from_collection(
-        &self,
-        _collection: &str,
-        _id: &DocumentId,
-    ) -> DbResult<()> {
+    async fn delete_from_collection(&self, _collection: &str, _id: &DocumentId) -> DbResult<()> {
         Err(DbError::InvalidInput(
             "collection-scoped storage not supported by this backend".into(),
         ))
@@ -195,14 +183,24 @@ pub trait IndexBackend: Send + Sync {
     }
 
     /// Search within a specific collection's index.
-    async fn search_collection(
-        &self,
-        _collection: &str,
-        _query: &Query,
-    ) -> DbResult<SearchResult> {
+    async fn search_collection(&self, _collection: &str, _query: &Query) -> DbResult<SearchResult> {
         Err(DbError::InvalidInput(
             "collection-scoped index not supported by this backend".into(),
         ))
+    }
+
+    /// Search with extended options (sort, pagination, aggregations, collapse).
+    ///
+    /// The default implementation delegates to [`search_collection`] and
+    /// applies options in-memory via the core query engine.
+    async fn search_collection_with_options(
+        &self,
+        collection: &str,
+        query: &Query,
+        _options: &SearchOptions,
+    ) -> DbResult<SearchResult> {
+        // Default: fall back to basic search (ignores options).
+        self.search_collection(collection, query).await
     }
 
     /// Delete a document from a specific collection's index.

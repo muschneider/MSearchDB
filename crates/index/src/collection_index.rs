@@ -62,8 +62,9 @@ use msearchdb_core::collection::{FieldMapping, MappedFieldType};
 use msearchdb_core::document::{Document, DocumentId, FieldValue};
 use msearchdb_core::error::{DbError, DbResult};
 use msearchdb_core::query::{
-    BoolQuery, FullTextQuery, Operator, Query, RangeQuery as CoreRangeQuery, ScoredDocument,
-    SearchResult, TermQuery as CoreTermQuery,
+    apply_collapse, apply_search_after, apply_sort, compute_aggregations, BoolQuery, FullTextQuery,
+    Operator, Query, RangeQuery as CoreRangeQuery, ScoredDocument, SearchOptions, SearchResult,
+    TermQuery as CoreTermQuery,
 };
 use msearchdb_core::VectorClock;
 
@@ -325,6 +326,7 @@ impl CollectionIndexManager {
             documents.push(ScoredDocument {
                 document: doc,
                 score: *score,
+                sort: Vec::new(),
             });
         }
 
@@ -334,6 +336,91 @@ impl CollectionIndexManager {
             documents,
             total,
             took_ms,
+            aggregations: HashMap::new(),
+        })
+    }
+
+    /// Search with extended options (sort, aggregations, search_after, collapse).
+    ///
+    /// Fetches a generous set of raw results, then applies the core query
+    /// engine functions for sorting, aggregation, search_after, and collapse.
+    pub fn search_with_options(
+        &self,
+        collection: &str,
+        query: &Query,
+        options: &SearchOptions,
+    ) -> DbResult<SearchResult> {
+        let collections = self
+            .collections
+            .read()
+            .map_err(|e| DbError::IndexError(format!("lock poisoned: {}", e)))?;
+
+        let col_index = collections.get(collection).ok_or_else(|| {
+            DbError::NotFound(format!("collection index '{}' not found", collection))
+        })?;
+
+        let start = Instant::now();
+        let searcher = col_index.reader.searcher();
+        let tantivy_query = Self::translate_query(query, &col_index.index, &col_index.field_map)?;
+
+        // Fetch a generous number of raw results for aggregation / sorting.
+        // We need ALL matching docs for accurate aggregations, so use a large limit.
+        let fetch_limit = std::cmp::max(
+            options.from + options.size + 1000,
+            DEFAULT_SEARCH_LIMIT * 100,
+        );
+        let top_docs = searcher
+            .search(&*tantivy_query, &TopDocs::with_limit(fetch_limit))
+            .map_err(|e| DbError::IndexError(format!("search failed: {}", e)))?;
+
+        let total = top_docs.len() as u64;
+        let mut documents = Vec::with_capacity(top_docs.len());
+
+        for (score, doc_address) in &top_docs {
+            let retrieved: TantivyDocument = searcher
+                .doc(*doc_address)
+                .map_err(|e| DbError::IndexError(format!("failed to retrieve doc: {}", e)))?;
+            let doc =
+                Self::reconstruct_document(&retrieved, &col_index.schema, &col_index.field_map);
+            documents.push(ScoredDocument {
+                document: doc,
+                score: *score,
+                sort: Vec::new(),
+            });
+        }
+
+        // 1. Compute aggregations over ALL matched docs (before pagination).
+        let aggregations = if options.aggregations.is_empty() {
+            HashMap::new()
+        } else {
+            compute_aggregations(&documents, &options.aggregations)
+        };
+
+        // 2. Apply sorting.
+        apply_sort(&mut documents, &options.sort);
+
+        // 3. Apply search_after cursor filtering.
+        if let Some(ref cursor) = options.search_after {
+            apply_search_after(&mut documents, cursor, &options.sort);
+        }
+
+        // 4. Apply collapse / deduplication.
+        if let Some(ref collapse) = options.collapse {
+            apply_collapse(&mut documents, collapse);
+        }
+
+        // 5. Apply from/size pagination.
+        let from = options.from;
+        let size = options.size;
+        let paged: Vec<ScoredDocument> = documents.into_iter().skip(from).take(size).collect();
+
+        let took_ms = start.elapsed().as_millis() as u64;
+
+        Ok(SearchResult {
+            documents: paged,
+            total,
+            took_ms,
+            aggregations,
         })
     }
 
@@ -945,5 +1032,679 @@ mod tests {
         let result = mgr.search("prices", &query).unwrap();
         // 30, 40, 50, 60
         assert_eq!(result.total, 4);
+    }
+
+    // ===================================================================
+    // Aggregation, sorting, search_after, collapse integration tests
+    // ===================================================================
+
+    use msearchdb_core::query::{
+        Aggregation, AggregationResult, CollapseOptions, DateInterval, RangeBucketDef,
+        SearchOptions, SortClause, SortOrder, SortValue,
+    };
+
+    /// Helper: index a batch of product documents for aggregation tests.
+    fn setup_products(mgr: &CollectionIndexManager) -> FieldMapping {
+        mgr.create_collection("products").unwrap();
+        let mut mapping = FieldMapping::new();
+
+        let products = vec![
+            ("p1", "Laptop", "electronics", 999.0, 1700000000.0),
+            ("p2", "Phone", "electronics", 699.0, 1700003600.0),
+            ("p3", "Tablet", "electronics", 499.0, 1700007200.0),
+            ("p4", "Novel", "books", 15.0, 1700010800.0),
+            ("p5", "Textbook", "books", 85.0, 1700014400.0),
+            ("p6", "T-Shirt", "clothing", 25.0, 1700018000.0),
+            ("p7", "Jeans", "clothing", 60.0, 1700021600.0),
+            ("p8", "Hat", "clothing", 20.0, 1700025200.0),
+            ("p9", "Keyboard", "electronics", 120.0, 1700028800.0),
+            ("p10", "Mouse", "electronics", 45.0, 1700032400.0),
+        ];
+
+        for (id, name, category, price, ts) in products {
+            let doc = Document::new(DocumentId::new(id))
+                .with_field("name", FieldValue::Text(name.into()))
+                .with_field("category", FieldValue::Text(category.into()))
+                .with_field("price", FieldValue::Number(price))
+                .with_field("timestamp", FieldValue::Number(ts));
+            mapping = mgr.index_document("products", &doc, &mapping).unwrap();
+        }
+        mgr.commit("products").unwrap();
+        mapping
+    }
+
+    // -- Terms aggregation integration --
+
+    #[test]
+    fn integration_terms_aggregation() {
+        let mgr = CollectionIndexManager::new_in_ram();
+        setup_products(&mgr);
+
+        let query = Query::FullText(FullTextQuery {
+            field: "_body".into(),
+            query: "electronics books clothing".into(),
+            operator: Operator::Or,
+        });
+
+        let mut aggs = HashMap::new();
+        aggs.insert(
+            "top_categories".to_string(),
+            Aggregation::Terms {
+                field: "category".into(),
+                size: 10,
+            },
+        );
+
+        let options = SearchOptions {
+            size: 10,
+            aggregations: aggs,
+            ..Default::default()
+        };
+
+        let result = mgr
+            .search_with_options("products", &query, &options)
+            .unwrap();
+
+        // Verify buckets
+        let agg = result.aggregations.get("top_categories").unwrap();
+        if let AggregationResult::Buckets { buckets } = agg {
+            assert_eq!(buckets.len(), 3);
+            // electronics: 5, clothing: 3, books: 2
+            assert_eq!(buckets[0].key, "electronics");
+            assert_eq!(buckets[0].doc_count, 5);
+            assert_eq!(buckets[1].key, "clothing");
+            assert_eq!(buckets[1].doc_count, 3);
+            assert_eq!(buckets[2].key, "books");
+            assert_eq!(buckets[2].doc_count, 2);
+        } else {
+            panic!("expected Buckets result");
+        }
+    }
+
+    // -- Range aggregation integration --
+
+    #[test]
+    fn integration_range_aggregation() {
+        let mgr = CollectionIndexManager::new_in_ram();
+        setup_products(&mgr);
+
+        let query = Query::FullText(FullTextQuery {
+            field: "_body".into(),
+            query: "electronics books clothing".into(),
+            operator: Operator::Or,
+        });
+
+        let mut aggs = HashMap::new();
+        aggs.insert(
+            "price_ranges".to_string(),
+            Aggregation::Range {
+                field: "price".into(),
+                ranges: vec![
+                    RangeBucketDef {
+                        key: Some("cheap".into()),
+                        from: None,
+                        to: Some(50.0),
+                    },
+                    RangeBucketDef {
+                        key: Some("mid".into()),
+                        from: Some(50.0),
+                        to: Some(200.0),
+                    },
+                    RangeBucketDef {
+                        key: Some("expensive".into()),
+                        from: Some(200.0),
+                        to: None,
+                    },
+                ],
+            },
+        );
+
+        let options = SearchOptions {
+            size: 10,
+            aggregations: aggs,
+            ..Default::default()
+        };
+
+        let result = mgr
+            .search_with_options("products", &query, &options)
+            .unwrap();
+
+        let agg = result.aggregations.get("price_ranges").unwrap();
+        if let AggregationResult::Buckets { buckets } = agg {
+            assert_eq!(buckets.len(), 3);
+            // cheap (<50): 15, 25, 20, 45 = 4
+            assert_eq!(buckets[0].key, "cheap");
+            assert_eq!(buckets[0].doc_count, 4);
+            // mid (50-200): 85, 60, 120 = 3
+            assert_eq!(buckets[1].key, "mid");
+            assert_eq!(buckets[1].doc_count, 3);
+            // expensive (>=200): 999, 699, 499 = 3
+            assert_eq!(buckets[2].key, "expensive");
+            assert_eq!(buckets[2].doc_count, 3);
+        } else {
+            panic!("expected Buckets");
+        }
+    }
+
+    // -- Date histogram integration --
+
+    #[test]
+    fn integration_date_histogram_aggregation() {
+        let mgr = CollectionIndexManager::new_in_ram();
+        setup_products(&mgr);
+
+        let query = Query::FullText(FullTextQuery {
+            field: "_body".into(),
+            query: "electronics books clothing".into(),
+            operator: Operator::Or,
+        });
+
+        let mut aggs = HashMap::new();
+        aggs.insert(
+            "hourly".to_string(),
+            Aggregation::DateHistogram {
+                field: "timestamp".into(),
+                interval: DateInterval::Hour,
+            },
+        );
+
+        let options = SearchOptions {
+            size: 10,
+            aggregations: aggs,
+            ..Default::default()
+        };
+
+        let result = mgr
+            .search_with_options("products", &query, &options)
+            .unwrap();
+
+        let agg = result.aggregations.get("hourly").unwrap();
+        if let AggregationResult::Buckets { buckets } = agg {
+            // Timestamps are 1h apart, so each doc is in its own bucket.
+            assert_eq!(buckets.len(), 10);
+            // Each bucket should have doc_count = 1.
+            for bucket in buckets {
+                assert_eq!(bucket.doc_count, 1);
+            }
+            // Buckets should be sorted by key ascending.
+            let keys: Vec<u64> = buckets
+                .iter()
+                .map(|b| b.key.parse::<u64>().unwrap())
+                .collect();
+            let mut sorted_keys = keys.clone();
+            sorted_keys.sort();
+            assert_eq!(keys, sorted_keys);
+        } else {
+            panic!("expected Buckets");
+        }
+    }
+
+    // -- Metric aggregations integration --
+
+    #[test]
+    fn integration_metric_aggregations() {
+        let mgr = CollectionIndexManager::new_in_ram();
+        setup_products(&mgr);
+
+        let query = Query::FullText(FullTextQuery {
+            field: "_body".into(),
+            query: "electronics books clothing".into(),
+            operator: Operator::Or,
+        });
+
+        let mut aggs = HashMap::new();
+        aggs.insert(
+            "avg_price".to_string(),
+            Aggregation::Avg {
+                field: "price".into(),
+            },
+        );
+        aggs.insert(
+            "sum_price".to_string(),
+            Aggregation::Sum {
+                field: "price".into(),
+            },
+        );
+        aggs.insert(
+            "min_price".to_string(),
+            Aggregation::Min {
+                field: "price".into(),
+            },
+        );
+        aggs.insert(
+            "max_price".to_string(),
+            Aggregation::Max {
+                field: "price".into(),
+            },
+        );
+        aggs.insert(
+            "unique_categories".to_string(),
+            Aggregation::Cardinality {
+                field: "category".into(),
+            },
+        );
+
+        let options = SearchOptions {
+            size: 10,
+            aggregations: aggs,
+            ..Default::default()
+        };
+
+        let result = mgr
+            .search_with_options("products", &query, &options)
+            .unwrap();
+
+        // avg: (999+699+499+15+85+25+60+20+120+45)/10 = 256.7
+        if let AggregationResult::Metric { value: Some(v) } = &result.aggregations["avg_price"] {
+            assert!((v - 256.7).abs() < 0.1);
+        } else {
+            panic!("expected avg Metric");
+        }
+
+        // sum: 2567.0
+        if let AggregationResult::Metric { value: Some(v) } = &result.aggregations["sum_price"] {
+            assert!((v - 2567.0).abs() < 0.1);
+        } else {
+            panic!("expected sum Metric");
+        }
+
+        // min: 15.0
+        if let AggregationResult::Metric { value: Some(v) } = &result.aggregations["min_price"] {
+            assert!((v - 15.0).abs() < f64::EPSILON);
+        } else {
+            panic!("expected min Metric");
+        }
+
+        // max: 999.0
+        if let AggregationResult::Metric { value: Some(v) } = &result.aggregations["max_price"] {
+            assert!((v - 999.0).abs() < f64::EPSILON);
+        } else {
+            panic!("expected max Metric");
+        }
+
+        // cardinality: 3 (electronics, books, clothing)
+        if let AggregationResult::Metric { value: Some(v) } =
+            &result.aggregations["unique_categories"]
+        {
+            assert!((v - 3.0).abs() < f64::EPSILON);
+        } else {
+            panic!("expected cardinality Metric");
+        }
+    }
+
+    // -- Sorting integration --
+
+    #[test]
+    fn integration_sort_by_numeric_field() {
+        let mgr = CollectionIndexManager::new_in_ram();
+        setup_products(&mgr);
+
+        let query = Query::FullText(FullTextQuery {
+            field: "_body".into(),
+            query: "electronics books clothing".into(),
+            operator: Operator::Or,
+        });
+
+        let options = SearchOptions {
+            size: 10,
+            sort: vec![SortClause {
+                field: "price".into(),
+                order: SortOrder::Asc,
+            }],
+            ..Default::default()
+        };
+
+        let result = mgr
+            .search_with_options("products", &query, &options)
+            .unwrap();
+
+        // Verify ascending price order.
+        let prices: Vec<f64> = result
+            .documents
+            .iter()
+            .filter_map(|d| {
+                if let Some(FieldValue::Number(n)) = d.document.get_field("price") {
+                    Some(*n)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for w in prices.windows(2) {
+            assert!(w[0] <= w[1], "prices not sorted asc: {} > {}", w[0], w[1]);
+        }
+    }
+
+    #[test]
+    fn integration_sort_by_score_descending() {
+        let mgr = CollectionIndexManager::new_in_ram();
+        setup_products(&mgr);
+
+        let query = Query::FullText(FullTextQuery {
+            field: "_body".into(),
+            query: "electronics books clothing".into(),
+            operator: Operator::Or,
+        });
+
+        let options = SearchOptions {
+            size: 10,
+            sort: vec![SortClause {
+                field: "_score".into(),
+                order: SortOrder::Desc,
+            }],
+            ..Default::default()
+        };
+
+        let result = mgr
+            .search_with_options("products", &query, &options)
+            .unwrap();
+
+        let scores: Vec<f32> = result.documents.iter().map(|d| d.score).collect();
+        for w in scores.windows(2) {
+            assert!(w[0] >= w[1], "scores not desc: {} < {}", w[0], w[1]);
+        }
+    }
+
+    #[test]
+    fn integration_multi_field_sort() {
+        let mgr = CollectionIndexManager::new_in_ram();
+        setup_products(&mgr);
+
+        let query = Query::FullText(FullTextQuery {
+            field: "_body".into(),
+            query: "electronics books clothing".into(),
+            operator: Operator::Or,
+        });
+
+        let options = SearchOptions {
+            size: 10,
+            sort: vec![
+                SortClause {
+                    field: "category".into(),
+                    order: SortOrder::Asc,
+                },
+                SortClause {
+                    field: "price".into(),
+                    order: SortOrder::Asc,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let result = mgr
+            .search_with_options("products", &query, &options)
+            .unwrap();
+
+        // Verify: within the same category, prices are ascending.
+        let pairs: Vec<(String, f64)> = result
+            .documents
+            .iter()
+            .map(|d| {
+                let cat = match d.document.get_field("category") {
+                    Some(FieldValue::Text(s)) => s.clone(),
+                    _ => String::new(),
+                };
+                let price = match d.document.get_field("price") {
+                    Some(FieldValue::Number(n)) => *n,
+                    _ => 0.0,
+                };
+                (cat, price)
+            })
+            .collect();
+
+        // Categories should be sorted: books < clothing < electronics.
+        let cats: Vec<&str> = pairs.iter().map(|(c, _)| c.as_str()).collect();
+        let mut sorted_cats = cats.clone();
+        sorted_cats.sort();
+        assert_eq!(cats, sorted_cats);
+    }
+
+    // -- Sort values populated for search_after cursor --
+
+    #[test]
+    fn integration_sort_values_populated() {
+        let mgr = CollectionIndexManager::new_in_ram();
+        setup_products(&mgr);
+
+        let query = Query::FullText(FullTextQuery {
+            field: "_body".into(),
+            query: "electronics books clothing".into(),
+            operator: Operator::Or,
+        });
+
+        let options = SearchOptions {
+            size: 3,
+            sort: vec![SortClause {
+                field: "price".into(),
+                order: SortOrder::Asc,
+            }],
+            ..Default::default()
+        };
+
+        let result = mgr
+            .search_with_options("products", &query, &options)
+            .unwrap();
+
+        // Each hit should have exactly 1 sort value.
+        for doc in &result.documents {
+            assert_eq!(doc.sort.len(), 1, "expected 1 sort value per hit");
+            assert!(
+                matches!(doc.sort[0], SortValue::Number(_)),
+                "expected numeric sort value"
+            );
+        }
+    }
+
+    // -- Search-after (cursor-based pagination) integration --
+
+    #[test]
+    fn integration_search_after_pagination() {
+        let mgr = CollectionIndexManager::new_in_ram();
+        setup_products(&mgr);
+
+        let query = Query::FullText(FullTextQuery {
+            field: "_body".into(),
+            query: "electronics books clothing".into(),
+            operator: Operator::Or,
+        });
+
+        let sort = vec![SortClause {
+            field: "price".into(),
+            order: SortOrder::Asc,
+        }];
+
+        // Page 1: first 3 results.
+        let options_p1 = SearchOptions {
+            size: 3,
+            sort: sort.clone(),
+            ..Default::default()
+        };
+
+        let page1 = mgr
+            .search_with_options("products", &query, &options_p1)
+            .unwrap();
+        assert_eq!(page1.documents.len(), 3);
+
+        // Get the last sort value from page 1 to use as cursor.
+        let cursor = page1.documents.last().unwrap().sort.clone();
+        assert!(!cursor.is_empty());
+
+        // Page 2: next 3 results after the cursor.
+        let options_p2 = SearchOptions {
+            size: 3,
+            sort: sort.clone(),
+            search_after: Some(cursor.clone()),
+            ..Default::default()
+        };
+
+        let page2 = mgr
+            .search_with_options("products", &query, &options_p2)
+            .unwrap();
+        assert_eq!(page2.documents.len(), 3);
+
+        // Verify no overlap between pages.
+        let p1_ids: Vec<&str> = page1
+            .documents
+            .iter()
+            .map(|d| d.document.id.as_str())
+            .collect();
+        let p2_ids: Vec<&str> = page2
+            .documents
+            .iter()
+            .map(|d| d.document.id.as_str())
+            .collect();
+        for id in &p2_ids {
+            assert!(
+                !p1_ids.contains(id),
+                "page 2 contains document from page 1: {}",
+                id
+            );
+        }
+
+        // Verify page 2 prices are all > last page 1 price.
+        let last_p1_price = match &page1.documents.last().unwrap().sort[0] {
+            SortValue::Number(n) => *n,
+            _ => panic!("expected Number"),
+        };
+        for doc in &page2.documents {
+            let price = match doc.document.get_field("price") {
+                Some(FieldValue::Number(n)) => *n,
+                _ => panic!("expected price"),
+            };
+            assert!(
+                price > last_p1_price,
+                "page 2 doc price {} should be > cursor {}",
+                price,
+                last_p1_price
+            );
+        }
+    }
+
+    // -- Collapse / deduplication integration --
+
+    #[test]
+    fn integration_collapse_by_field() {
+        let mgr = CollectionIndexManager::new_in_ram();
+        setup_products(&mgr);
+
+        let query = Query::FullText(FullTextQuery {
+            field: "_body".into(),
+            query: "electronics books clothing".into(),
+            operator: Operator::Or,
+        });
+
+        let options = SearchOptions {
+            size: 10,
+            collapse: Some(CollapseOptions {
+                field: "category".into(),
+            }),
+            ..Default::default()
+        };
+
+        let result = mgr
+            .search_with_options("products", &query, &options)
+            .unwrap();
+
+        // Should have at most 3 results (one per category).
+        assert_eq!(
+            result.documents.len(),
+            3,
+            "expected 3 collapsed results, got {}",
+            result.documents.len()
+        );
+
+        // Verify all categories are unique.
+        let categories: Vec<String> = result
+            .documents
+            .iter()
+            .map(|d| match d.document.get_field("category") {
+                Some(FieldValue::Text(s)) => s.clone(),
+                _ => String::new(),
+            })
+            .collect();
+
+        let unique: std::collections::HashSet<&String> = categories.iter().collect();
+        assert_eq!(
+            unique.len(),
+            categories.len(),
+            "categories not unique after collapse"
+        );
+    }
+
+    // -- Combined: aggregation + sort + collapse --
+
+    #[test]
+    fn integration_combined_agg_sort_collapse() {
+        let mgr = CollectionIndexManager::new_in_ram();
+        setup_products(&mgr);
+
+        let query = Query::FullText(FullTextQuery {
+            field: "_body".into(),
+            query: "electronics books clothing".into(),
+            operator: Operator::Or,
+        });
+
+        let mut aggs = HashMap::new();
+        aggs.insert(
+            "avg_price".to_string(),
+            Aggregation::Avg {
+                field: "price".into(),
+            },
+        );
+        aggs.insert(
+            "top_cats".to_string(),
+            Aggregation::Terms {
+                field: "category".into(),
+                size: 10,
+            },
+        );
+
+        let options = SearchOptions {
+            size: 10,
+            sort: vec![SortClause {
+                field: "price".into(),
+                order: SortOrder::Desc,
+            }],
+            aggregations: aggs,
+            collapse: Some(CollapseOptions {
+                field: "category".into(),
+            }),
+            ..Default::default()
+        };
+
+        let result = mgr
+            .search_with_options("products", &query, &options)
+            .unwrap();
+
+        // Aggregations computed over ALL matched docs (before collapse).
+        assert!(result.aggregations.contains_key("avg_price"));
+        assert!(result.aggregations.contains_key("top_cats"));
+
+        if let AggregationResult::Metric { value: Some(v) } = &result.aggregations["avg_price"] {
+            assert!((v - 256.7).abs() < 0.1);
+        } else {
+            panic!("expected avg Metric");
+        }
+
+        // After collapse: 3 results (one per category).
+        assert_eq!(result.documents.len(), 3);
+
+        // After sort desc by price: the highest-priced item in each category
+        // should come first.
+        let prices: Vec<f64> = result
+            .documents
+            .iter()
+            .filter_map(|d| {
+                if let Some(FieldValue::Number(n)) = d.document.get_field("price") {
+                    Some(*n)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for w in prices.windows(2) {
+            assert!(w[0] >= w[1], "prices not sorted desc after collapse");
+        }
     }
 }

@@ -92,11 +92,7 @@ impl StorageBackend for MemStorage {
         Ok(())
     }
 
-    async fn get_from_collection(
-        &self,
-        collection: &str,
-        id: &DocumentId,
-    ) -> DbResult<Document> {
+    async fn get_from_collection(&self, collection: &str, id: &DocumentId) -> DbResult<Document> {
         let cols = self.collections.lock().await;
         let col = cols
             .get(collection)
@@ -106,11 +102,7 @@ impl StorageBackend for MemStorage {
             .ok_or_else(|| DbError::NotFound(format!("document '{}' not found", id)))
     }
 
-    async fn put_in_collection(
-        &self,
-        collection: &str,
-        document: Document,
-    ) -> DbResult<()> {
+    async fn put_in_collection(&self, collection: &str, document: Document) -> DbResult<()> {
         let mut cols = self.collections.lock().await;
         let col = cols
             .entry(collection.to_owned())
@@ -119,11 +111,7 @@ impl StorageBackend for MemStorage {
         Ok(())
     }
 
-    async fn delete_from_collection(
-        &self,
-        collection: &str,
-        id: &DocumentId,
-    ) -> DbResult<()> {
+    async fn delete_from_collection(&self, collection: &str, id: &DocumentId) -> DbResult<()> {
         let mut cols = self.collections.lock().await;
         if let Some(col) = cols.get_mut(collection) {
             col.remove(id.as_str());
@@ -171,11 +159,7 @@ impl IndexBackend for EmptyIndex {
         Ok(mapping.clone())
     }
 
-    async fn search_collection(
-        &self,
-        _collection: &str,
-        _query: &Query,
-    ) -> DbResult<SearchResult> {
+    async fn search_collection(&self, _collection: &str, _query: &Query) -> DbResult<SearchResult> {
         Ok(SearchResult::empty(1))
     }
 
@@ -931,11 +915,7 @@ impl IndexBackend for MappingAwareIndex {
         Ok(updated)
     }
 
-    async fn search_collection(
-        &self,
-        _collection: &str,
-        _query: &Query,
-    ) -> DbResult<SearchResult> {
+    async fn search_collection(&self, _collection: &str, _query: &Query) -> DbResult<SearchResult> {
         Ok(SearchResult::empty(1))
     }
 

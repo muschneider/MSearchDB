@@ -121,6 +121,7 @@ pub async fn scatter_search(
         documents: ranked,
         total: total_hits,
         took_ms,
+        aggregations: std::collections::HashMap::new(),
     })
 }
 
@@ -199,6 +200,7 @@ pub async fn scatter_search_with_pool(
         documents: ranked,
         total: total_hits,
         took_ms,
+        aggregations: std::collections::HashMap::new(),
     })
 }
 
@@ -251,6 +253,7 @@ mod tests {
             document: Document::new(DocumentId::new(id))
                 .with_field("title", FieldValue::Text(format!("doc-{}", id))),
             score,
+            sort: Vec::new(),
         }
     }
 

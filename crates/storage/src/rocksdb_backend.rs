@@ -376,9 +376,9 @@ impl RocksDbStorage {
         block_opts.set_bloom_filter(10.0, false);
         cf_opts.set_block_based_table_factory(&block_opts);
 
-        self.db
-            .create_cf(&cf_name, &cf_opts)
-            .map_err(|e| DbError::StorageError(format!("failed to create CF '{}': {}", cf_name, e)))?;
+        self.db.create_cf(&cf_name, &cf_opts).map_err(|e| {
+            DbError::StorageError(format!("failed to create CF '{}': {}", cf_name, e))
+        })?;
 
         tracing::info!(collection, cf = %cf_name, "created collection column family");
         Ok(())
@@ -387,9 +387,9 @@ impl RocksDbStorage {
     /// Drop the column family for the named collection.
     pub fn drop_collection_cf(&self, collection: &str) -> DbResult<()> {
         let cf_name = Self::collection_cf_name(collection);
-        self.db
-            .drop_cf(&cf_name)
-            .map_err(|e| DbError::StorageError(format!("failed to drop CF '{}': {}", cf_name, e)))?;
+        self.db.drop_cf(&cf_name).map_err(|e| {
+            DbError::StorageError(format!("failed to drop CF '{}': {}", cf_name, e))
+        })?;
 
         tracing::info!(collection, cf = %cf_name, "dropped collection column family");
         Ok(())
@@ -410,8 +410,7 @@ impl RocksDbStorage {
         let value =
             rmp_serde::to_vec(doc).map_err(|e| DbError::SerializationError(e.to_string()))?;
         let cf_name = Self::collection_cf_name(collection);
-        self.put(&cf_name, doc.id.as_str().as_bytes(), &value)
-            .await
+        self.put(&cf_name, doc.id.as_str().as_bytes(), &value).await
     }
 
     /// Retrieve a document from a collection-specific column family.
@@ -523,11 +522,7 @@ impl StorageBackend for RocksDbStorage {
         Ok(self.collection_cf_exists(collection))
     }
 
-    async fn get_from_collection(
-        &self,
-        collection: &str,
-        id: &DocumentId,
-    ) -> DbResult<Document> {
+    async fn get_from_collection(&self, collection: &str, id: &DocumentId) -> DbResult<Document> {
         self.get_document_from_collection(collection, id)
             .await?
             .ok_or_else(|| {
@@ -538,23 +533,13 @@ impl StorageBackend for RocksDbStorage {
             })
     }
 
-    async fn put_in_collection(
-        &self,
-        collection: &str,
-        document: Document,
-    ) -> DbResult<()> {
+    async fn put_in_collection(&self, collection: &str, document: Document) -> DbResult<()> {
         self.put_document_in_collection(collection, &document).await
     }
 
-    async fn delete_from_collection(
-        &self,
-        collection: &str,
-        id: &DocumentId,
-    ) -> DbResult<()> {
+    async fn delete_from_collection(&self, collection: &str, id: &DocumentId) -> DbResult<()> {
         // Check existence first per trait contract.
-        let exists = self
-            .get_document_from_collection(collection, id)
-            .await?;
+        let exists = self.get_document_from_collection(collection, id).await?;
         if exists.is_none() {
             return Err(DbError::NotFound(format!(
                 "document '{}' not found in collection '{}'",
@@ -832,32 +817,43 @@ mod tests {
         let (_dir, storage) = temp_storage();
 
         // Create via trait
-        StorageBackend::create_collection(&storage, "via_trait").await.unwrap();
-        assert!(StorageBackend::collection_exists(&storage, "via_trait").await.unwrap());
+        StorageBackend::create_collection(&storage, "via_trait")
+            .await
+            .unwrap();
+        assert!(StorageBackend::collection_exists(&storage, "via_trait")
+            .await
+            .unwrap());
 
         // Put via trait
-        let doc = Document::new(DocumentId::new("t1"))
-            .with_field("x", FieldValue::Text("hello".into()));
+        let doc =
+            Document::new(DocumentId::new("t1")).with_field("x", FieldValue::Text("hello".into()));
         StorageBackend::put_in_collection(&storage, "via_trait", doc.clone())
             .await
             .unwrap();
 
         // Get via trait
-        let fetched = StorageBackend::get_from_collection(&storage, "via_trait", &DocumentId::new("t1"))
-            .await
-            .unwrap();
+        let fetched =
+            StorageBackend::get_from_collection(&storage, "via_trait", &DocumentId::new("t1"))
+                .await
+                .unwrap();
         assert_eq!(fetched.id.as_str(), "t1");
 
         // Delete via trait
         StorageBackend::delete_from_collection(&storage, "via_trait", &DocumentId::new("t1"))
             .await
             .unwrap();
-        let result = StorageBackend::get_from_collection(&storage, "via_trait", &DocumentId::new("t1")).await;
+        let result =
+            StorageBackend::get_from_collection(&storage, "via_trait", &DocumentId::new("t1"))
+                .await;
         assert!(result.is_err());
 
         // Drop via trait
-        StorageBackend::drop_collection(&storage, "via_trait").await.unwrap();
-        assert!(!StorageBackend::collection_exists(&storage, "via_trait").await.unwrap());
+        StorageBackend::drop_collection(&storage, "via_trait")
+            .await
+            .unwrap();
+        assert!(!StorageBackend::collection_exists(&storage, "via_trait")
+            .await
+            .unwrap());
     }
 
     #[tokio::test]

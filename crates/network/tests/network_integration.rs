@@ -163,9 +163,11 @@ async fn query_service_search_roundtrip() {
             document: Document::new(DocumentId::new("d1"))
                 .with_field("title", FieldValue::Text("hello world".into())),
             score: 2.5,
+            sort: Vec::new(),
         }],
         total: 1,
         took_ms: 5,
+        aggregations: HashMap::new(),
     }));
 
     let addr = start_query_server(storage, index, 1).await;
@@ -229,9 +231,11 @@ async fn two_servers_full_rpc_roundtrip() {
             document: Document::new(DocumentId::new("n1-d1"))
                 .with_field("title", FieldValue::Text("from node 1".into())),
             score: 3.0,
+            sort: Vec::new(),
         }],
         total: 1,
         took_ms: 2,
+        aggregations: HashMap::new(),
     }));
 
     let storage2: Arc<dyn StorageBackend> = Arc::new(MockStorage::new());
@@ -240,9 +244,11 @@ async fn two_servers_full_rpc_roundtrip() {
             document: Document::new(DocumentId::new("n2-d1"))
                 .with_field("title", FieldValue::Text("from node 2".into())),
             score: 1.5,
+            sort: Vec::new(),
         }],
         total: 1,
         took_ms: 3,
+        aggregations: HashMap::new(),
     }));
 
     let addr1 = start_query_server(storage1, index1, 1).await;
@@ -279,9 +285,11 @@ async fn scatter_gather_with_three_nodes() {
                 document: Document::new(DocumentId::new(doc_id))
                     .with_field("x", FieldValue::Number(score as f64)),
                 score,
+                sort: Vec::new(),
             }],
             total: 1,
             took_ms: 1,
+            aggregations: HashMap::new(),
         }));
         (storage, index, node_id)
     };
@@ -338,9 +346,11 @@ async fn scatter_gather_one_node_timing_out() {
                 document: Document::new(DocumentId::new("a"))
                     .with_field("x", FieldValue::Number(5.0)),
                 score: 5.0,
+                sort: Vec::new(),
             }],
             total: 1,
             took_ms: 1,
+            aggregations: HashMap::new(),
         }));
         (s, i)
     };
@@ -352,9 +362,11 @@ async fn scatter_gather_one_node_timing_out() {
                 document: Document::new(DocumentId::new("b"))
                     .with_field("x", FieldValue::Number(3.0)),
                 score: 3.0,
+                sort: Vec::new(),
             }],
             total: 1,
             took_ms: 1,
+            aggregations: HashMap::new(),
         }));
         (s, i)
     };
@@ -432,9 +444,11 @@ async fn scatter_gather_deduplication_across_nodes() {
                 document: Document::new(DocumentId::new("shared-doc"))
                     .with_field("x", FieldValue::Number(1.0)),
                 score,
+                sort: Vec::new(),
             }],
             total: 1,
             took_ms: 1,
+            aggregations: HashMap::new(),
         }))
     };
 
@@ -622,9 +636,11 @@ fn protobuf_search_request_response() {
             document: Document::new(DocumentId::new("sr-1"))
                 .with_field("body", FieldValue::Text("rust async".into())),
             score: 4.2,
+            sort: Vec::new(),
         }],
         total: 1,
         took_ms: 8,
+        aggregations: HashMap::new(),
     };
     let result_bytes = serde_json::to_vec(&result).unwrap();
 
@@ -688,6 +704,7 @@ fn protobuf_scatter_request_result() {
     let scored = ScoredDocument {
         document: Document::new(DocumentId::new("sc-1")),
         score: 1.0,
+        sort: Vec::new(),
     };
     let scored_bytes = serde_json::to_vec(&scored).unwrap();
 

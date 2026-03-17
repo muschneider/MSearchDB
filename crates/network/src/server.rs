@@ -463,6 +463,7 @@ mod tests {
             document: Document::new(DocumentId::new("s1"))
                 .with_field("title", FieldValue::Text("test".into())),
             score: 1.5,
+            sort: Vec::new(),
         };
         let bytes = serde_json::to_vec(&scored).unwrap();
         let result = proto::ScatterResult {

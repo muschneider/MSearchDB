@@ -40,13 +40,18 @@ pub mod vector_clock;
 // Re-export the most commonly used types at crate root for ergonomics.
 pub use cluster::{ClusterState, NodeId, NodeInfo, NodeStatus};
 pub use cluster_router::ClusterRouter;
-pub use collection::{Collection, CollectionAlias, CollectionSettings, FieldMapping, MappedFieldType};
+pub use collection::{
+    Collection, CollectionAlias, CollectionSettings, FieldMapping, MappedFieldType,
+};
 pub use config::NodeConfig;
 pub use consistency::ConsistencyLevel;
 pub use consistent_hash::ConsistentHashRing;
 pub use document::{Document, DocumentId, FieldValue};
 pub use error::{DbError, DbResult};
-pub use query::{Query, SearchResult};
+pub use query::{
+    Aggregation, AggregationBucket, AggregationResult, CollapseOptions, Query, SearchOptions,
+    SearchResult, SortClause, SortOrder, SortValue,
+};
 pub use read_coordinator::{ReadCoordinator, ReadResolution, ReplicaResponse};
 pub use rebalancer::{DataMove, RebalancePlan, RebalanceStatus};
 pub use vector_clock::VectorClock;

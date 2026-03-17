@@ -356,9 +356,7 @@ pub async fn delete_document(
     }
 
     let doc_id = DocumentId::new(&id);
-    let cmd = RaftCommand::DeleteDocument {
-        id: doc_id.clone(),
-    };
+    let cmd = RaftCommand::DeleteDocument { id: doc_id.clone() };
 
     match state.raft_node.propose(cmd).await {
         Ok(_) => {

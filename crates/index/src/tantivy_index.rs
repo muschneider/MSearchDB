@@ -54,7 +54,7 @@ use msearchdb_core::document::{Document, DocumentId, FieldValue};
 use msearchdb_core::error::{DbError, DbResult};
 use msearchdb_core::query::{
     BoolQuery, FullTextQuery, Operator, Query, RangeQuery as CoreRangeQuery, ScoredDocument,
-    SearchResult, TermQuery as CoreTermQuery,
+    SearchOptions, SearchResult, TermQuery as CoreTermQuery,
 };
 use msearchdb_core::traits::IndexBackend;
 use msearchdb_core::VectorClock;
@@ -423,6 +423,7 @@ impl TantivyIndex {
             documents.push(ScoredDocument {
                 document: doc,
                 score: *score,
+                sort: Vec::new(),
             });
         }
 
@@ -432,6 +433,7 @@ impl TantivyIndex {
             documents,
             total,
             took_ms,
+            aggregations: HashMap::new(),
         })
     }
 
@@ -820,12 +822,19 @@ impl IndexBackend for TantivyIndex {
     }
 
     /// Search within a collection's index.
-    async fn search_collection(
+    async fn search_collection(&self, collection: &str, query: &Query) -> DbResult<SearchResult> {
+        self.collection_manager.search(collection, query)
+    }
+
+    /// Search with extended options (sort, pagination, aggregations, collapse).
+    async fn search_collection_with_options(
         &self,
         collection: &str,
         query: &Query,
+        options: &SearchOptions,
     ) -> DbResult<SearchResult> {
-        self.collection_manager.search(collection, query)
+        self.collection_manager
+            .search_with_options(collection, query, options)
     }
 
     /// Delete a document from a collection's index.

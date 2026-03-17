@@ -18,9 +18,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 
 use msearchdb_core::consistency::ConsistencyLevel;
-use msearchdb_core::query::{
-    FullTextQuery, Operator, Query as CoreQuery, ScoredDocument, SearchResult,
-};
+use msearchdb_core::query::{FullTextQuery, Operator, Query as CoreQuery, SearchResult};
 
 use crate::dto::{
     ErrorResponse, GetDocumentParams, SearchRequest, SearchResponse, SimpleSearchParams,
@@ -79,19 +77,37 @@ async fn fan_out_search(
     state: &AppState,
     targets: &[String],
     query: &CoreQuery,
+    options: Option<&msearchdb_core::query::SearchOptions>,
 ) -> Result<SearchResult, msearchdb_core::error::DbError> {
-    let mut all_docs: Vec<ScoredDocument> = Vec::new();
+    let mut all_docs: Vec<msearchdb_core::query::ScoredDocument> = Vec::new();
     let mut total: u64 = 0;
+    let mut all_aggs: std::collections::HashMap<String, msearchdb_core::query::AggregationResult> =
+        std::collections::HashMap::new();
     let start = std::time::Instant::now();
 
     for target in targets {
-        let result = state.index.search_collection(target, query).await?;
+        let result = if let Some(opts) = options {
+            state
+                .index
+                .search_collection_with_options(target, query, opts)
+                .await?
+        } else {
+            state.index.search_collection(target, query).await?
+        };
         total += result.total;
         all_docs.extend(result.documents);
+        // Merge aggregations (last writer wins for multi-collection fan-out).
+        all_aggs.extend(result.aggregations);
     }
 
-    // Sort by score descending.
-    all_docs.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    // Sort by score descending (if no sort options, default behaviour).
+    if options.is_none_or(|o| o.sort.is_empty()) {
+        all_docs.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
 
     let took_ms = start.elapsed().as_millis() as u64;
 
@@ -99,6 +115,7 @@ async fn fan_out_search(
         documents: all_docs,
         total,
         took_ms,
+        aggregations: all_aggs,
     })
 }
 
@@ -128,9 +145,10 @@ pub async fn search_documents(
         .map(ConsistencyLevel::from_str_param)
         .unwrap_or_default();
 
+    let search_options = body.to_search_options();
     let core_query = body.query.into_core_query();
 
-    match fan_out_search(&state, &targets, &core_query).await {
+    match fan_out_search(&state, &targets, &core_query, Some(&search_options)).await {
         Ok(result) => {
             let mut resp = serde_json::to_value(SearchResponse::from_search_result(result))
                 .unwrap_or_default();
@@ -180,7 +198,7 @@ pub async fn simple_search(
         operator: Operator::Or,
     });
 
-    match fan_out_search(&state, &targets, &core_query).await {
+    match fan_out_search(&state, &targets, &core_query, None).await {
         Ok(result) => {
             let mut resp = serde_json::to_value(SearchResponse::from_search_result(result))
                 .unwrap_or_default();
