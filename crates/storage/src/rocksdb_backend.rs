@@ -350,6 +350,31 @@ impl RocksDbStorage {
         self.sequence.load(Ordering::SeqCst)
     }
 
+    /// Return a reference to the underlying RocksDB handle.
+    ///
+    /// Used by the snapshot manager to create RocksDB checkpoints.
+    pub fn db_ref(&self) -> &Arc<DB> {
+        &self.db
+    }
+
+    /// Create a RocksDB checkpoint at the given path.
+    ///
+    /// A checkpoint is a point-in-time, hard-link-based copy of the database
+    /// that is very fast (typically < 1 second) and space-efficient.
+    /// It captures all column families including collection CFs.
+    pub fn create_checkpoint(&self, checkpoint_path: &std::path::Path) -> DbResult<()> {
+        let checkpoint = rocksdb::checkpoint::Checkpoint::new(&self.db)
+            .map_err(|e| DbError::SnapshotError(format!("failed to create checkpoint: {}", e)))?;
+        checkpoint
+            .create_checkpoint(checkpoint_path)
+            .map_err(|e| DbError::SnapshotError(format!("failed to write checkpoint: {}", e)))?;
+        tracing::info!(
+            path = %checkpoint_path.display(),
+            "created RocksDB checkpoint"
+        );
+        Ok(())
+    }
+
     // -- Collection-scoped operations ----------------------------------------
 
     /// Return the column-family name used for documents in a given collection.

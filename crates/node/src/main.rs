@@ -21,12 +21,14 @@ use msearchdb_core::cluster::{NodeAddress, NodeId, NodeInfo, NodeStatus};
 use msearchdb_core::cluster_router::ClusterRouter;
 use msearchdb_core::config::NodeConfig;
 use msearchdb_core::read_coordinator::ReadCoordinator;
+use msearchdb_core::snapshot::SnapshotConfig;
 use msearchdb_core::traits::{IndexBackend, StorageBackend};
 use msearchdb_index::schema_builder::{FieldConfig, FieldType, SchemaConfig};
 use msearchdb_index::tantivy_index::TantivyIndex;
 use msearchdb_network::connection_pool::ConnectionPool;
 use msearchdb_node::cluster_manager::ClusterManager;
 use msearchdb_node::metrics::Metrics;
+use msearchdb_node::snapshot_manager::SnapshotManager;
 use msearchdb_node::state::AppState;
 use msearchdb_storage::rocksdb_backend::{RocksDbStorage, StorageOptions};
 use openraft::BasicNode;
@@ -173,12 +175,13 @@ async fn main() {
         compression: config.compression,
         bloom_filter_bits: 10,
     };
-    let storage: Arc<dyn StorageBackend> = Arc::new(
+    let rocksdb_storage = Arc::new(
         RocksDbStorage::new(&storage_dir, storage_options).unwrap_or_else(|e| {
             tracing::error!(error = %e, "failed to open RocksDB");
             std::process::exit(1);
         }),
     );
+    let storage: Arc<dyn StorageBackend> = rocksdb_storage.clone();
     tracing::info!("RocksDB storage ready");
 
     // Step 5: Initialise Tantivy index
@@ -261,7 +264,19 @@ async fn main() {
         }
     }
 
-    // Step 10: Build application state and HTTP router
+    // Step 10: Create snapshot manager
+    let snapshots_dir = config.data_dir.join("snapshots");
+    if let Err(e) = std::fs::create_dir_all(&snapshots_dir) {
+        tracing::error!(dir = %snapshots_dir.display(), error = %e, "failed to create snapshots directory");
+    }
+    let snapshot_manager = Arc::new(SnapshotManager::new(
+        &config.data_dir,
+        rocksdb_storage,
+        SnapshotConfig::default(),
+    ));
+    tracing::info!("snapshot manager ready");
+
+    // Step 11: Build application state and HTTP router
     let read_coordinator = Arc::new(ReadCoordinator::new(config.replication_factor));
     let state = AppState {
         raft_node,
@@ -274,11 +289,12 @@ async fn main() {
         metrics,
         local_node_id: config.node_id,
         read_coordinator,
+        snapshot_manager: Some(snapshot_manager),
     };
 
     let app = msearchdb_node::build_router(state);
 
-    // Step 11: Start HTTP server with graceful shutdown
+    // Step 12: Start HTTP server with graceful shutdown
     let addr = format!("{}:{}", config.http_host, config.http_port);
     tracing::info!(addr = %addr, "HTTP server listening");
 

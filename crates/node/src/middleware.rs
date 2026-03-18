@@ -292,6 +292,7 @@ mod tests {
             read_coordinator: Arc::new(msearchdb_core::read_coordinator::ReadCoordinator::new(
                 config.replication_factor,
             )),
+            snapshot_manager: None,
         }
     }
 

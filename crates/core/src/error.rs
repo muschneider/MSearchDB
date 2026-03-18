@@ -84,6 +84,10 @@ pub enum DbError {
     /// The requested alias was not found.
     #[error("alias not found: {0}")]
     AliasNotFound(String),
+
+    /// A snapshot operation failed.
+    #[error("snapshot error: {0}")]
+    SnapshotError(String),
 }
 
 /// A convenience alias used throughout MSearchDB.

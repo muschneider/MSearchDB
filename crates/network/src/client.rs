@@ -290,6 +290,66 @@ impl NodeClient {
         })
     }
 
+    /// Stream a snapshot to a remote node via the `InstallSnapshot` RPC.
+    ///
+    /// Breaks the snapshot data into `chunk_size`-byte pieces and streams
+    /// them as `SnapshotChunk` messages. The first chunk carries the `metadata`
+    /// (serialized Raft `InstallSnapshotRequest`); the last chunk has `done = true`.
+    pub async fn send_install_snapshot(
+        &self,
+        snapshot_data: Vec<u8>,
+        metadata: Vec<u8>,
+        chunk_size: usize,
+    ) -> DbResult<()> {
+        let mut chunks = Vec::new();
+        let total = snapshot_data.len();
+        let mut offset = 0usize;
+        let mut first = true;
+
+        while offset < total {
+            let end = std::cmp::min(offset + chunk_size, total);
+            let done = end == total;
+            let chunk = proto::SnapshotChunk {
+                offset: offset as u64,
+                data: snapshot_data[offset..end].to_vec(),
+                done,
+                metadata: if first {
+                    first = false;
+                    metadata.clone()
+                } else {
+                    Vec::new()
+                },
+            };
+            chunks.push(chunk);
+            offset = end;
+        }
+
+        // Handle empty snapshot data
+        if chunks.is_empty() {
+            chunks.push(proto::SnapshotChunk {
+                offset: 0,
+                data: Vec::new(),
+                done: true,
+                metadata,
+            });
+        }
+
+        let stream = tokio_stream::iter(chunks);
+        let mut client = proto::node_service_client::NodeServiceClient::new(self.channel.clone());
+        client
+            .install_snapshot(stream)
+            .await
+            .map_err(|e| DbError::NetworkError(format!("install_snapshot RPC failed: {}", e)))?;
+
+        tracing::info!(
+            addr = %self.addr,
+            size_bytes = total,
+            "snapshot streamed to remote node"
+        );
+
+        Ok(())
+    }
+
     /// Request to join a remote cluster.
     pub async fn join_cluster(&self, node_id: u64, address: &str) -> DbResult<()> {
         let mut client = proto::node_service_client::NodeServiceClient::new(self.channel.clone());

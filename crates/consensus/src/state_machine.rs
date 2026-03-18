@@ -76,6 +76,10 @@ pub struct DbStateMachine {
 
     /// The most recent snapshot, if one has been built.
     current_snapshot: RwLock<Option<StoredSnapshot>>,
+
+    /// Optional snapshot directory for file-backed snapshots.
+    /// When `Some`, snapshots are persisted to disk for efficient transfer.
+    snapshot_dir: Option<std::path::PathBuf>,
 }
 
 /// An in-memory representation of a snapshot.
@@ -93,7 +97,29 @@ impl DbStateMachine {
             last_applied_log: RwLock::new(None),
             last_membership: RwLock::new(StoredMembership::default()),
             current_snapshot: RwLock::new(None),
+            snapshot_dir: None,
         }
+    }
+
+    /// Create a state machine with a snapshot directory for persistence.
+    pub fn with_snapshot_dir(
+        storage: Arc<dyn StorageBackend>,
+        index: Arc<dyn IndexBackend>,
+        snapshot_dir: impl Into<std::path::PathBuf>,
+    ) -> Self {
+        Self {
+            storage,
+            index,
+            last_applied_log: RwLock::new(None),
+            last_membership: RwLock::new(StoredMembership::default()),
+            current_snapshot: RwLock::new(None),
+            snapshot_dir: Some(snapshot_dir.into()),
+        }
+    }
+
+    /// Return the configured snapshot directory, if any.
+    pub fn snapshot_dir(&self) -> Option<&std::path::Path> {
+        self.snapshot_dir.as_deref()
     }
 
     /// Apply a single [`RaftCommand`] to storage and index.

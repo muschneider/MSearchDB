@@ -208,6 +208,7 @@ async fn make_test_state() -> AppState {
         read_coordinator: Arc::new(msearchdb_core::read_coordinator::ReadCoordinator::new(
             config.replication_factor,
         )),
+        snapshot_manager: None,
     }
 }
 
@@ -962,6 +963,7 @@ async fn make_schema_test_state() -> AppState {
         read_coordinator: Arc::new(msearchdb_core::read_coordinator::ReadCoordinator::new(
             config.replication_factor,
         )),
+        snapshot_manager: None,
     }
 }
 

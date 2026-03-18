@@ -49,6 +49,7 @@ pub mod handlers;
 pub mod metrics;
 pub mod middleware;
 pub mod observability;
+pub mod snapshot_manager;
 pub mod state;
 
 use std::time::Duration;
@@ -133,6 +134,14 @@ pub fn build_router(state: AppState) -> Router {
         .route("/_nodes", get(handlers::cluster::list_nodes))
         .route("/_nodes/:id/_join", post(handlers::cluster::join_node));
 
+    let snapshot_routes = Router::new()
+        .route(
+            "/_snapshot",
+            post(handlers::snapshot::create_snapshot).get(handlers::snapshot::list_snapshots),
+        )
+        .route("/_snapshot/:id", get(handlers::snapshot::download_snapshot))
+        .route("/_restore", post(handlers::snapshot::restore_snapshot));
+
     let admin_routes = Router::new()
         .route("/_stats", get(handlers::admin::get_stats))
         .route("/metrics", get(metrics_handler));
@@ -142,6 +151,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(collection_routes)
         .merge(alias_routes)
         .merge(cluster_routes)
+        .merge(snapshot_routes)
         .merge(admin_routes)
         .with_state(state.clone());
 

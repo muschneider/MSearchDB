@@ -31,6 +31,7 @@ use msearchdb_core::traits::{IndexBackend, StorageBackend};
 use msearchdb_network::connection_pool::ConnectionPool;
 
 use crate::metrics::Metrics;
+use crate::snapshot_manager::SnapshotManager;
 
 // ---------------------------------------------------------------------------
 // AppState
@@ -78,6 +79,9 @@ pub struct AppState {
 
     /// Read coordinator for consistency-level-aware distributed reads.
     pub read_coordinator: Arc<ReadCoordinator>,
+
+    /// Optional snapshot manager for backup/restore operations.
+    pub snapshot_manager: Option<Arc<SnapshotManager>>,
 }
 
 /// Metadata for a single collection.

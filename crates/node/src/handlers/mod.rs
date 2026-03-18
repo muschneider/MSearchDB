@@ -19,3 +19,4 @@ pub mod cluster;
 pub mod collections;
 pub mod documents;
 pub mod search;
+pub mod snapshot;

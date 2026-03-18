@@ -38,6 +38,10 @@ uuid = { workspace = true }
 async-trait = { workspace = true }
 openraft = { workspace = true }
 dashmap = { workspace = true }
+zstd = { workspace = true }
+tar = { workspace = true }
+tokio-util = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tokio = { workspace = true }
