@@ -76,9 +76,7 @@ fn bench_cache_hit(c: &mut Criterion) {
 
     c.bench_function("cache/l1_hit", |b| {
         b.iter(|| {
-            rt.block_on(async {
-                cache.get("products", &DocumentId::new("doc-000000")).await
-            })
+            rt.block_on(async { cache.get("products", &DocumentId::new("doc-000000")).await })
         });
     });
 }
@@ -88,11 +86,7 @@ fn bench_cache_miss(c: &mut Criterion) {
     let cache = DocumentCache::with_defaults();
 
     c.bench_function("cache/l1_miss", |b| {
-        b.iter(|| {
-            rt.block_on(async {
-                cache.get("products", &DocumentId::new("missing")).await
-            })
-        });
+        b.iter(|| rt.block_on(async { cache.get("products", &DocumentId::new("missing")).await }));
     });
 }
 
@@ -289,9 +283,7 @@ fn bench_session_wait_already_applied(c: &mut Criterion) {
     mgr.advance_applied_index(1000);
 
     c.bench_function("session/wait_already_applied", |b| {
-        b.iter(|| {
-            rt.block_on(async { mgr.wait_for_index(500).await.unwrap() })
-        });
+        b.iter(|| rt.block_on(async { mgr.wait_for_index(500).await.unwrap() }));
     });
 }
 

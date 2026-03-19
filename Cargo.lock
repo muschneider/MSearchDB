@@ -1711,6 +1711,7 @@ dependencies = [
  "msearchdb-index",
  "msearchdb-storage",
  "openraft",
+ "rand",
  "serde",
  "serde_json",
  "tempfile",

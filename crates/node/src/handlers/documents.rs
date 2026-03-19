@@ -135,10 +135,7 @@ pub async fn index_document(
                 version: 1,
             };
             let mut headers = HeaderMap::new();
-            headers.insert(
-                SESSION_TOKEN_HEADER,
-                token.encode().parse().unwrap(),
-            );
+            headers.insert(SESSION_TOKEN_HEADER, token.encode().parse().unwrap());
             (
                 StatusCode::CREATED,
                 headers,
@@ -256,11 +253,13 @@ pub async fn upsert_document(
                 version: 1,
             };
             let mut headers = HeaderMap::new();
-            headers.insert(
-                SESSION_TOKEN_HEADER,
-                token.encode().parse().unwrap(),
-            );
-            (StatusCode::OK, headers, Json(serde_json::to_value(resp).unwrap())).into_response()
+            headers.insert(SESSION_TOKEN_HEADER, token.encode().parse().unwrap());
+            (
+                StatusCode::OK,
+                headers,
+                Json(serde_json::to_value(resp).unwrap()),
+            )
+                .into_response()
         }
         Err(e) => {
             let (status, resp) = db_error_to_response(e);
@@ -319,8 +318,7 @@ pub async fn get_document(
                     .await
                 {
                     let (status, resp) = db_error_to_response(e);
-                    return (status, Json(serde_json::to_value(resp).unwrap()))
-                        .into_response();
+                    return (status, Json(serde_json::to_value(resp).unwrap())).into_response();
                 }
             }
         }
@@ -374,8 +372,7 @@ pub async fn get_document(
                      (single-node mode)",
                     consistency, required
                 )));
-                return (status, Json(serde_json::to_value(resp).unwrap()))
-                    .into_response();
+                return (status, Json(serde_json::to_value(resp).unwrap())).into_response();
             }
 
             let resolution = state
@@ -476,10 +473,7 @@ pub async fn delete_document(
                 "result": "deleted",
             });
             let mut resp_headers = HeaderMap::new();
-            resp_headers.insert(
-                SESSION_TOKEN_HEADER,
-                token.encode().parse().unwrap(),
-            );
+            resp_headers.insert(SESSION_TOKEN_HEADER, token.encode().parse().unwrap());
             (StatusCode::OK, resp_headers, Json(body)).into_response()
         }
         Err(e) => {

@@ -115,6 +115,42 @@ impl RaftNode {
         Ok((Self { raft, node_id }, handle))
     }
 
+    /// Create a new Raft node with the **channel-based** in-process network
+    /// and caller-provided storage and index backends.
+    ///
+    /// This allows chaos / integration tests to inject custom backends
+    /// (e.g. fault-injecting wrappers) while still using the in-process
+    /// channel network for Raft communication.
+    pub async fn new_with_backends(
+        node_id: u64,
+        network: ChannelNetworkFactory,
+        storage: Arc<dyn StorageBackend>,
+        index: Arc<dyn IndexBackend>,
+    ) -> DbResult<(Self, Raft<TypeConfig>)> {
+        let raft_config = Config {
+            heartbeat_interval: 200,
+            election_timeout_min: 500,
+            election_timeout_max: 1000,
+            ..Default::default()
+        };
+
+        let raft_config = Arc::new(
+            raft_config
+                .validate()
+                .map_err(|e| DbError::ConsensusError(format!("invalid raft config: {}", e)))?,
+        );
+
+        let log_store = MemLogStore::new();
+        let state_machine = DbStateMachine::new(storage, index);
+
+        let raft = Raft::new(node_id, raft_config, network, log_store, state_machine)
+            .await
+            .map_err(|e| DbError::ConsensusError(format!("failed to create raft node: {}", e)))?;
+
+        let handle = raft.clone();
+        Ok((Self { raft, node_id }, handle))
+    }
+
     /// Propose a [`RaftCommand`] through Raft consensus.
     ///
     /// Only the **leader** can accept proposals.  If this node is a follower,
@@ -254,12 +290,23 @@ use std::ops::RangeInclusive;
 use tokio::sync::Mutex;
 
 /// Minimal in-memory storage backend used by [`RaftNode::new_with_channel_network`].
-pub(crate) struct InMemoryStorage {
+///
+/// Also available for external tests that need to provide custom storage
+/// wrappers (e.g. fault injection) while still having a working base
+/// implementation.
+pub struct InMemoryStorage {
     docs: Mutex<HashMap<String, Document>>,
 }
 
+impl Default for InMemoryStorage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InMemoryStorage {
-    fn new() -> Self {
+    /// Create a new empty in-memory storage backend.
+    pub fn new() -> Self {
         Self {
             docs: Mutex::new(HashMap::new()),
         }
@@ -299,7 +346,9 @@ impl StorageBackend for InMemoryStorage {
 }
 
 /// No-op index backend used by [`RaftNode::new_with_channel_network`].
-struct NoopIndex;
+///
+/// Also available for external tests that need a trivial index backend.
+pub struct NoopIndex;
 
 #[async_trait]
 impl IndexBackend for NoopIndex {
