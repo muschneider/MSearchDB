@@ -41,6 +41,9 @@ uuid = { version = "1", features = ["v4", "serde"] }
 # Concurrent collections
 dashmap = "5"
 
+# In-memory LRU cache
+moka = { version = "0.12", features = ["future"] }
+
 # Async traits
 async-trait = "0.1"
 
@@ -87,6 +90,9 @@ tower = { version = "0.4", features = ["timeout", "util"] }
 tower-http = { version = "0.5", features = ["compression-gzip", "cors", "trace", "timeout"] }
 http = "1"
 hyper = "1"
+
+# Benchmarking
+criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 
 # Internal crates
 msearchdb-core = { path = "crates/core" }

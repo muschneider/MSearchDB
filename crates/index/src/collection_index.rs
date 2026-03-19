@@ -80,6 +80,9 @@ const WRITER_HEAP_BYTES: usize = 50 * 1024 * 1024;
 /// Default search result limit.
 const DEFAULT_SEARCH_LIMIT: usize = 10;
 
+/// Number of document store blocks to cache per collection reader (L2 cache).
+const DOC_STORE_CACHE_BLOCKS: usize = 128;
+
 // ---------------------------------------------------------------------------
 // FieldMap — maps field names to Tantivy Field handles
 // ---------------------------------------------------------------------------
@@ -554,6 +557,7 @@ impl CollectionIndexManager {
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
+            .doc_store_cache_num_blocks(DOC_STORE_CACHE_BLOCKS)
             .try_into()
             .map_err(|e| DbError::IndexError(format!("failed to create reader: {}", e)))?;
 

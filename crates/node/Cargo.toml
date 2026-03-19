@@ -38,10 +38,16 @@ uuid = { workspace = true }
 async-trait = { workspace = true }
 openraft = { workspace = true }
 dashmap = { workspace = true }
+moka = { workspace = true }
 zstd = { workspace = true }
 tar = { workspace = true }
 tokio-util = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tokio = { workspace = true }
+tokio = { version = "1", features = ["full", "test-util"] }
+criterion = { workspace = true }
+
+[[bench]]
+name = "performance"
+harness = false

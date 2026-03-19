@@ -42,6 +42,7 @@
 //! - **tower middleware composition** for cross-cutting concerns.
 //! - **`From` impls** between API DTOs and domain types for clean conversion.
 
+pub mod cache;
 pub mod cluster_manager;
 pub mod dto;
 pub mod errors;
@@ -49,8 +50,10 @@ pub mod handlers;
 pub mod metrics;
 pub mod middleware;
 pub mod observability;
+pub mod session;
 pub mod snapshot_manager;
 pub mod state;
+pub mod write_batcher;
 
 use std::time::Duration;
 

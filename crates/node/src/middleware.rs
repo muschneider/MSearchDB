@@ -279,8 +279,10 @@ mod tests {
                 .await
                 .unwrap();
 
+        let raft_node = Arc::new(raft_node);
+
         AppState {
-            raft_node: Arc::new(raft_node),
+            raft_node: raft_node.clone(),
             storage,
             index,
             connection_pool: Arc::new(ConnectionPool::new()),
@@ -293,6 +295,9 @@ mod tests {
                 config.replication_factor,
             )),
             snapshot_manager: None,
+            document_cache: Arc::new(crate::cache::DocumentCache::with_defaults()),
+            session_manager: Arc::new(crate::session::SessionManager::new()),
+            write_batcher: Arc::new(crate::write_batcher::WriteBatcher::new(raft_node)),
         }
     }
 

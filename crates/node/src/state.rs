@@ -30,8 +30,11 @@ use msearchdb_core::read_coordinator::ReadCoordinator;
 use msearchdb_core::traits::{IndexBackend, StorageBackend};
 use msearchdb_network::connection_pool::ConnectionPool;
 
+use crate::cache::DocumentCache;
 use crate::metrics::Metrics;
+use crate::session::SessionManager;
 use crate::snapshot_manager::SnapshotManager;
+use crate::write_batcher::WriteBatcher;
 
 // ---------------------------------------------------------------------------
 // AppState
@@ -82,6 +85,24 @@ pub struct AppState {
 
     /// Optional snapshot manager for backup/restore operations.
     pub snapshot_manager: Option<Arc<SnapshotManager>>,
+
+    /// L1 per-node LRU document cache.
+    ///
+    /// Provides sub-microsecond reads for frequently accessed documents.
+    /// Invalidated on every write and delete operation.
+    pub document_cache: Arc<DocumentCache>,
+
+    /// Session manager for read-your-writes consistency.
+    ///
+    /// Tracks the locally applied Raft log index so that clients with a
+    /// session token can wait until their write is visible.
+    pub session_manager: Arc<SessionManager>,
+
+    /// Write batcher for amortised Raft proposal overhead.
+    ///
+    /// Buffers up to 100 documents or 10ms before flushing as a single
+    /// Raft BatchInsert entry.
+    pub write_batcher: Arc<WriteBatcher>,
 }
 
 /// Metadata for a single collection.

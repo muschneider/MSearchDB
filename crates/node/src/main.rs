@@ -26,10 +26,13 @@ use msearchdb_core::traits::{IndexBackend, StorageBackend};
 use msearchdb_index::schema_builder::{FieldConfig, FieldType, SchemaConfig};
 use msearchdb_index::tantivy_index::TantivyIndex;
 use msearchdb_network::connection_pool::ConnectionPool;
+use msearchdb_node::cache::DocumentCache;
 use msearchdb_node::cluster_manager::ClusterManager;
 use msearchdb_node::metrics::Metrics;
+use msearchdb_node::session::SessionManager;
 use msearchdb_node::snapshot_manager::SnapshotManager;
 use msearchdb_node::state::AppState;
+use msearchdb_node::write_batcher::WriteBatcher;
 use msearchdb_storage::rocksdb_backend::{RocksDbStorage, StorageOptions};
 use openraft::BasicNode;
 
@@ -276,7 +279,26 @@ async fn main() {
     ));
     tracing::info!("snapshot manager ready");
 
-    // Step 11: Build application state and HTTP router
+    // Step 11: Create performance components
+    let document_cache = Arc::new(DocumentCache::with_defaults());
+    tracing::info!(
+        max_capacity = 10_000,
+        ttl_secs = 60,
+        "L1 document cache ready"
+    );
+
+    let session_manager = Arc::new(SessionManager::new());
+    tracing::info!("read-your-writes session manager ready");
+
+    let write_batcher = Arc::new(WriteBatcher::new(raft_node.clone()));
+    let _batcher_handle = write_batcher.start().await;
+    tracing::info!(
+        max_batch_size = 100,
+        max_batch_delay_ms = 10,
+        "write batcher started"
+    );
+
+    // Step 12: Build application state and HTTP router
     let read_coordinator = Arc::new(ReadCoordinator::new(config.replication_factor));
     let state = AppState {
         raft_node,
@@ -290,11 +312,14 @@ async fn main() {
         local_node_id: config.node_id,
         read_coordinator,
         snapshot_manager: Some(snapshot_manager),
+        document_cache,
+        session_manager,
+        write_batcher,
     };
 
     let app = msearchdb_node::build_router(state);
 
-    // Step 12: Start HTTP server with graceful shutdown
+    // Step 13: Start HTTP server with graceful shutdown
     let addr = format!("{}:{}", config.http_host, config.http_port);
     tracing::info!(addr = %addr, "HTTP server listening");
 

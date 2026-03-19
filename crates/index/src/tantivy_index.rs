@@ -72,6 +72,13 @@ const WRITER_HEAP_BYTES: usize = 50 * 1024 * 1024;
 /// Default search result limit.
 const DEFAULT_SEARCH_LIMIT: usize = 10;
 
+/// Number of document store blocks to cache per reader (L2 segment cache).
+///
+/// Tantivy stores documents in compressed blocks.  Caching these blocks in
+/// memory avoids repeated decompression on hot reads.  A larger value
+/// improves latency for document retrieval at the cost of memory.
+const DOC_STORE_CACHE_BLOCKS: usize = 256;
+
 // ---------------------------------------------------------------------------
 // TantivyIndex
 // ---------------------------------------------------------------------------
@@ -143,10 +150,11 @@ impl TantivyIndex {
         let merge_policy = LogMergePolicy::default();
         writer.set_merge_policy(Box::new(merge_policy));
 
-        // Configure the reader
+        // Configure the reader with L2 document store block cache.
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
+            .doc_store_cache_num_blocks(DOC_STORE_CACHE_BLOCKS)
             .try_into()
             .map_err(|e| DbError::IndexError(format!("failed to create index reader: {}", e)))?;
 
@@ -185,6 +193,7 @@ impl TantivyIndex {
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
+            .doc_store_cache_num_blocks(DOC_STORE_CACHE_BLOCKS)
             .try_into()
             .map_err(|e| DbError::IndexError(format!("failed to create index reader: {}", e)))?;
 

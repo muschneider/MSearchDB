@@ -196,7 +196,7 @@ async fn make_test_state() -> AppState {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     AppState {
-        raft_node,
+        raft_node: raft_node.clone(),
         storage,
         index,
         connection_pool: Arc::new(ConnectionPool::new()),
@@ -209,6 +209,9 @@ async fn make_test_state() -> AppState {
             config.replication_factor,
         )),
         snapshot_manager: None,
+        document_cache: Arc::new(msearchdb_node::cache::DocumentCache::with_defaults()),
+        session_manager: Arc::new(msearchdb_node::session::SessionManager::new()),
+        write_batcher: Arc::new(msearchdb_node::write_batcher::WriteBatcher::new(raft_node)),
     }
 }
 
@@ -951,7 +954,7 @@ async fn make_schema_test_state() -> AppState {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     AppState {
-        raft_node,
+        raft_node: raft_node.clone(),
         storage,
         index,
         connection_pool: Arc::new(ConnectionPool::new()),
@@ -964,6 +967,9 @@ async fn make_schema_test_state() -> AppState {
             config.replication_factor,
         )),
         snapshot_manager: None,
+        document_cache: Arc::new(msearchdb_node::cache::DocumentCache::with_defaults()),
+        session_manager: Arc::new(msearchdb_node::session::SessionManager::new()),
+        write_batcher: Arc::new(msearchdb_node::write_batcher::WriteBatcher::new(raft_node)),
     }
 }
 
