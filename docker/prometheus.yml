@@ -1,0 +1,13 @@
+# Prometheus configuration for MSearchDB cluster
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "msearchdb"
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - "msearchdb-node1:9200"
+          - "msearchdb-node2:9200"
+          - "msearchdb-node3:9200"

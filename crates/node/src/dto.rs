@@ -701,19 +701,50 @@ pub struct BulkResponse {
 // ---------------------------------------------------------------------------
 
 /// Response for `GET /_cluster/health`.
+///
+/// Status rules:
+/// - **`green`**: all expected nodes are active (`number_of_nodes == active_nodes`).
+/// - **`yellow`**: quorum is met (`active_nodes > number_of_nodes / 2`), but not
+///   all nodes are reachable.
+/// - **`red`**: no quorum (`active_nodes <= number_of_nodes / 2`) or no leader.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ClusterHealthResponse {
     /// Cluster health status: `"green"`, `"yellow"`, or `"red"`.
     pub status: String,
 
-    /// Number of nodes in the cluster.
-    pub number_of_nodes: usize,
+    /// Human-readable cluster name.
+    pub cluster_name: String,
 
-    /// The id of the current leader node.
-    pub leader_id: Option<u64>,
+    /// Total number of nodes expected in the cluster.
+    pub number_of_nodes: u64,
 
-    /// Whether this node is the leader.
-    pub is_leader: bool,
+    /// Number of nodes currently reachable / active.
+    pub active_nodes: u64,
+
+    /// The node id of the current Raft leader, if one has been elected.
+    pub leader_node: Option<u64>,
+
+    /// The last committed Raft log index.
+    pub raft_commit_index: i64,
+
+    /// Per-follower replication lag in committed log entries.
+    ///
+    /// Keys are stringified node ids; values are the number of entries the
+    /// follower is behind the leader.
+    pub replication_lag: HashMap<String, i64>,
+
+    /// Per-collection health information.
+    pub collections: HashMap<String, CollectionHealthInfo>,
+}
+
+/// Health information for a single collection.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CollectionHealthInfo {
+    /// Approximate document count.
+    pub docs: u64,
+
+    /// Approximate size of the collection data in bytes.
+    pub size_bytes: u64,
 }
 
 /// Request to join a node to the cluster.
@@ -1222,15 +1253,36 @@ mod tests {
 
     #[test]
     fn cluster_health_response_serialize() {
+        let mut collections = HashMap::new();
+        collections.insert(
+            "products".to_string(),
+            CollectionHealthInfo {
+                docs: 100_000,
+                size_bytes: 52_428_800,
+            },
+        );
+
+        let mut replication_lag = HashMap::new();
+        replication_lag.insert("2".to_string(), 0);
+        replication_lag.insert("3".to_string(), 2);
+
         let resp = ClusterHealthResponse {
             status: "green".into(),
+            cluster_name: "msearchdb-cluster".into(),
             number_of_nodes: 3,
-            leader_id: Some(1),
-            is_leader: true,
+            active_nodes: 3,
+            leader_node: Some(1),
+            raft_commit_index: 12345,
+            replication_lag,
+            collections,
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("green"));
         assert!(json.contains("\"number_of_nodes\":3"));
+        assert!(json.contains("\"active_nodes\":3"));
+        assert!(json.contains("\"leader_node\":1"));
+        assert!(json.contains("\"raft_commit_index\":12345"));
+        assert!(json.contains("\"products\""));
     }
 
     #[test]

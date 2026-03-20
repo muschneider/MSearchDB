@@ -42,6 +42,7 @@
 //! - **tower middleware composition** for cross-cutting concerns.
 //! - **`From` impls** between API DTOs and domain types for clean conversion.
 
+pub mod admin_tui;
 pub mod cache;
 pub mod cluster_manager;
 pub mod dto;
@@ -159,14 +160,20 @@ pub fn build_router(state: AppState) -> Router {
         .with_state(state.clone());
 
     // Apply middleware layers (outermost first)
-    app.layer(axum::middleware::from_fn(middleware::request_id_middleware))
-        .layer(axum::middleware::from_fn(middleware::tracing_middleware))
-        .layer(axum::middleware::from_fn_with_state(
-            state,
-            middleware::auth_middleware,
-        ))
-        .layer(CompressionLayer::new())
-        .layer(TimeoutLayer::new(Duration::from_secs(30)))
+    app.layer(axum::middleware::from_fn(
+        middleware::trace_context_middleware,
+    ))
+    .layer(axum::middleware::from_fn(middleware::request_id_middleware))
+    .layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        middleware::tracing_middleware,
+    ))
+    .layer(axum::middleware::from_fn_with_state(
+        state,
+        middleware::auth_middleware,
+    ))
+    .layer(CompressionLayer::new())
+    .layer(TimeoutLayer::new(Duration::from_secs(30)))
 }
 
 // ---------------------------------------------------------------------------

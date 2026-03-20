@@ -1,16 +1,18 @@
 //! axum middleware for the MSearchDB REST API.
 //!
-//! This module provides five middleware layers composed via [`tower`]:
+//! This module provides six middleware layers composed via [`tower`]:
 //!
-//! 1. **Request ID** — assigns a UUID v4 to each request and sets the
+//! 1. **Trace Context** — propagates W3C `traceparent` headers for distributed
+//!    tracing across service boundaries.
+//! 2. **Request ID** — assigns a UUID v4 to each request and sets the
 //!    `X-Request-Id` header on both request and response.
-//! 2. **Tracing** — structured log line for every request with method, path,
+//! 3. **Tracing** — structured log line for every request with method, path,
 //!    status code, and latency.
-//! 3. **Auth** — simple API-key authentication via the `X-API-Key` header.
+//! 4. **Auth** — simple API-key authentication via the `X-API-Key` header.
 //!    Skipped entirely when no key is configured.
-//! 4. **Compression** — gzip response bodies larger than 1 KB via
+//! 5. **Compression** — gzip response bodies larger than 1 KB via
 //!    [`tower_http::compression`].
-//! 5. **Timeout** — 30-second per-request deadline via [`tower::timeout`].
+//! 6. **Timeout** — 30-second per-request deadline via [`tower::timeout`].
 //!
 //! # tower Middleware Composition
 //!
@@ -18,7 +20,7 @@
 //! Layers wrap an inner service and return a new service, forming a pipeline:
 //!
 //! ```text
-//! Timeout → Compression → Tracing → RequestId → Auth → Router
+//! Timeout → Compression → TraceContext → Tracing → RequestId → Auth → Router
 //! ```
 
 use std::time::{Duration, Instant};
@@ -66,22 +68,152 @@ pub async fn request_id_middleware(mut request: Request<Body>, next: Next) -> Re
 }
 
 // ---------------------------------------------------------------------------
+// Trace context propagation middleware
+// ---------------------------------------------------------------------------
+
+/// Middleware that propagates W3C `traceparent` context from incoming requests.
+///
+/// If the request includes a `traceparent` header, the trace context is
+/// extracted and set as the parent span.  Otherwise a new trace is started.
+/// The response includes a `traceparent` header with the current span context
+/// so that clients can correlate downstream calls.
+pub async fn trace_context_middleware(request: Request<Body>, next: Next) -> Response {
+    // Extract traceparent from request headers if present.
+    let traceparent = request
+        .headers()
+        .get("traceparent")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_owned());
+
+    let method = request.method().to_string();
+    let path = request.uri().path().to_owned();
+
+    // Create a tracing span with OTel-compatible fields.
+    let span = tracing::info_span!(
+        "http.request",
+        otel.kind = "server",
+        http.method = %method,
+        http.route = %path,
+        http.traceparent = traceparent.as_deref().unwrap_or("none"),
+    );
+
+    let _guard = span.enter();
+    let mut response = next.run(request).await;
+
+    // Propagate trace context in response (simplified — real W3C propagation
+    // requires extracting the current OTel SpanContext, but this ensures the
+    // header round-trips for clients that pass it in).
+    if let Some(tp) = traceparent {
+        if let Ok(val) = HeaderValue::from_str(&tp) {
+            response.headers_mut().insert("traceparent", val);
+        }
+    }
+
+    response
+}
+
+// ---------------------------------------------------------------------------
 // Tracing middleware
 // ---------------------------------------------------------------------------
+
+/// Normalize a URL path to replace dynamic segments with placeholders.
+///
+/// This avoids high-cardinality Prometheus label values by collapsing
+/// concrete resource identifiers into fixed tokens:
+///
+/// - `/collections/products/docs/doc1` → `/collections/:name/docs/:id`
+/// - `/collections/products/_search`   → `/collections/:name/_search`
+fn normalize_path(path: &str) -> String {
+    let segments: Vec<&str> = path.split('/').collect();
+    let mut result: Vec<&str> = Vec::with_capacity(segments.len());
+    let mut i = 0;
+    while i < segments.len() {
+        let seg = segments[i];
+        match seg {
+            "collections" => {
+                result.push(seg);
+                // Next segment is the collection name — replace with :name.
+                if i + 1 < segments.len() {
+                    i += 1;
+                    result.push(":name");
+                }
+            }
+            "docs" => {
+                result.push(seg);
+                // Next segment is the document id — replace with :id.
+                if i + 1 < segments.len() && !segments[i + 1].starts_with('_') {
+                    i += 1;
+                    result.push(":id");
+                }
+            }
+            "_aliases" => {
+                result.push(seg);
+                // Next segment is the alias name — replace with :name.
+                if i + 1 < segments.len() {
+                    i += 1;
+                    result.push(":name");
+                }
+            }
+            "_nodes" => {
+                result.push(seg);
+                // Next segment is the node id — replace with :id.
+                if i + 1 < segments.len() {
+                    i += 1;
+                    result.push(":id");
+                }
+            }
+            "_snapshot" => {
+                result.push(seg);
+                // Next segment is the snapshot id — replace with :id.
+                if i + 1 < segments.len() && !segments[i + 1].starts_with('_') {
+                    i += 1;
+                    result.push(":id");
+                }
+            }
+            _ => {
+                result.push(seg);
+            }
+        }
+        i += 1;
+    }
+    result.join("/")
+}
 
 /// Middleware that logs method, path, status code, and latency for every request.
 ///
 /// Uses structured [`tracing`] fields so log aggregation systems (ELK, Loki)
-/// can query individual fields.
-pub async fn tracing_middleware(request: Request<Body>, next: Next) -> Response {
+/// can query individual fields.  Also updates Prometheus HTTP metrics
+/// (`http_requests_total` and `http_request_duration_seconds`).
+pub async fn tracing_middleware(
+    State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
     let method = request.method().clone();
     let path = request.uri().path().to_owned();
     let start = Instant::now();
 
     let response = next.run(request).await;
 
-    let latency_ms = start.elapsed().as_millis();
+    let latency = start.elapsed();
+    let latency_ms = latency.as_millis();
+    let latency_secs = latency.as_secs_f64();
     let status = response.status().as_u16();
+
+    let method_str = method.to_string();
+    let normalized = normalize_path(&path);
+    let status_str = status.to_string();
+
+    state
+        .metrics
+        .http_requests_total
+        .with_label_values(&[&method_str, &normalized, &status_str])
+        .inc();
+    state
+        .metrics
+        .http_request_duration_seconds
+        .with_label_values(&[&method_str, &normalized])
+        .observe(latency_secs);
 
     tracing::info!(
         http.method = %method,
@@ -213,14 +345,78 @@ mod tests {
 
     #[tokio::test]
     async fn tracing_middleware_does_not_alter_response() {
+        let state = make_test_state(None).await;
         let app = Router::new()
             .route("/test", get(|| async { "ok" }))
-            .layer(middleware::from_fn(tracing_middleware));
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                tracing_middleware,
+            ))
+            .with_state(state);
 
         let req = Request::builder().uri("/test").body(Body::empty()).unwrap();
 
         let resp = send_request(app, req).await;
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn trace_context_middleware_round_trips_traceparent() {
+        let app = Router::new()
+            .route("/test", get(|| async { "ok" }))
+            .layer(middleware::from_fn(trace_context_middleware));
+
+        let traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        let req = Request::builder()
+            .uri("/test")
+            .header("traceparent", traceparent)
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = send_request(app, req).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let tp = resp
+            .headers()
+            .get("traceparent")
+            .expect("response should contain traceparent header")
+            .to_str()
+            .unwrap();
+        assert_eq!(tp, traceparent);
+    }
+
+    #[tokio::test]
+    async fn trace_context_middleware_no_traceparent_in_response_when_absent() {
+        let app = Router::new()
+            .route("/test", get(|| async { "ok" }))
+            .layer(middleware::from_fn(trace_context_middleware));
+
+        let req = Request::builder().uri("/test").body(Body::empty()).unwrap();
+
+        let resp = send_request(app, req).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(resp.headers().get("traceparent").is_none());
+    }
+
+    #[test]
+    fn normalize_path_replaces_dynamic_segments() {
+        assert_eq!(
+            normalize_path("/collections/products/docs/doc1"),
+            "/collections/:name/docs/:id"
+        );
+        assert_eq!(
+            normalize_path("/collections/products/_search"),
+            "/collections/:name/_search"
+        );
+        assert_eq!(
+            normalize_path("/collections/products/docs/_bulk"),
+            "/collections/:name/docs/_bulk"
+        );
+        assert_eq!(normalize_path("/_aliases/my_alias"), "/_aliases/:name");
+        assert_eq!(normalize_path("/_nodes/2/_join"), "/_nodes/:id/_join");
+        assert_eq!(normalize_path("/_snapshot/abc123"), "/_snapshot/:id");
+        assert_eq!(normalize_path("/_cluster/health"), "/_cluster/health");
+        assert_eq!(normalize_path("/_stats"), "/_stats");
     }
 
     async fn make_test_state(api_key: Option<String>) -> AppState {

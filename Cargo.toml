@@ -84,6 +84,16 @@ prometheus = "0.13"
 # Structured logging / file rotation
 tracing-appender = "0.2"
 
+# OpenTelemetry distributed tracing
+opentelemetry = "0.27"
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.27", features = ["tonic"] }
+tracing-opentelemetry = "0.28"
+
+# Terminal UI
+ratatui = "0.29"
+crossterm = "0.28"
+
 # HTTP / REST API
 axum = "0.7"
 tower = { version = "0.4", features = ["timeout", "util"] }

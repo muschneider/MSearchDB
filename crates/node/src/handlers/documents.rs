@@ -124,6 +124,18 @@ pub async fn index_document(
                 }
             }
 
+            // Update Prometheus metrics.
+            state
+                .metrics
+                .documents_total
+                .with_label_values(&[&collection])
+                .inc();
+            state
+                .metrics
+                .index_operations_total
+                .with_label_values(&["index", &collection])
+                .inc();
+
             // Generate session token for read-your-writes consistency.
             let applied = state.session_manager.current_applied_index() + 1;
             state.session_manager.advance_applied_index(applied);
@@ -242,6 +254,13 @@ pub async fn upsert_document(
                 }
             }
 
+            // Update Prometheus metrics.
+            state
+                .metrics
+                .index_operations_total
+                .with_label_values(&["update", &collection])
+                .inc();
+
             // Generate session token for read-your-writes consistency.
             let applied = state.session_manager.current_applied_index() + 1;
             state.session_manager.advance_applied_index(applied);
@@ -334,6 +353,11 @@ pub async fn get_document(
 
     // L1 cache check — fast path.
     if let Some(doc) = state.document_cache.get(&collection, &doc_id).await {
+        state
+            .metrics
+            .cache_hits_total
+            .with_label_values(&["document"])
+            .inc();
         let source = fields_to_value(&doc.fields);
         let body = serde_json::json!({
             "_id": doc.id.as_str(),
@@ -347,6 +371,11 @@ pub async fn get_document(
     }
 
     // L1 miss — read from storage.
+    state
+        .metrics
+        .cache_misses_total
+        .with_label_values(&["document"])
+        .inc();
     match state
         .storage
         .get_from_collection(&collection, &doc_id)
@@ -462,6 +491,13 @@ pub async fn delete_document(
                     meta.doc_count = meta.doc_count.saturating_sub(1);
                 }
             }
+
+            // Update Prometheus metrics.
+            state
+                .metrics
+                .index_operations_total
+                .with_label_values(&["delete", &collection])
+                .inc();
 
             // Generate session token.
             let applied = state.session_manager.current_applied_index() + 1;

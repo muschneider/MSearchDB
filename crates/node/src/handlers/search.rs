@@ -148,8 +148,16 @@ pub async fn search_documents(
     let search_options = body.to_search_options();
     let core_query = body.query.into_core_query();
 
+    let search_start = std::time::Instant::now();
     match fan_out_search(&state, &targets, &core_query, Some(&search_options)).await {
         Ok(result) => {
+            let duration_secs = search_start.elapsed().as_secs_f64();
+            state
+                .metrics
+                .search_duration_seconds
+                .with_label_values(&[&collection])
+                .observe(duration_secs);
+
             let mut resp = serde_json::to_value(SearchResponse::from_search_result(result))
                 .unwrap_or_default();
             if let Some(obj) = resp.as_object_mut() {
@@ -198,8 +206,16 @@ pub async fn simple_search(
         operator: Operator::Or,
     });
 
+    let search_start = std::time::Instant::now();
     match fan_out_search(&state, &targets, &core_query, None).await {
         Ok(result) => {
+            let duration_secs = search_start.elapsed().as_secs_f64();
+            state
+                .metrics
+                .search_duration_seconds
+                .with_label_values(&[&collection])
+                .observe(duration_secs);
+
             let mut resp = serde_json::to_value(SearchResponse::from_search_result(result))
                 .unwrap_or_default();
             if let Some(obj) = resp.as_object_mut() {

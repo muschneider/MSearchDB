@@ -9,6 +9,11 @@
 #   node1: http://localhost:9201  (gRPC: 9301)
 #   node2: http://localhost:9202  (gRPC: 9302)
 #   node3: http://localhost:9203  (gRPC: 9303)
+#
+# Observability:
+#   Prometheus: http://localhost:9090
+#   Grafana:    http://localhost:3000  (admin/admin)
+#   Jaeger:     http://localhost:16686
 
 services:
   node1:
@@ -102,6 +107,47 @@ services:
     depends_on:
       node1:
         condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: msearchdb-prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - msearchdb-net
+    depends_on:
+      - node1
+
+  grafana:
+    image: grafana/grafana:11.0.0
+    container_name: msearchdb-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    networks:
+      - msearchdb-net
+    depends_on:
+      - prometheus
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.56
+    container_name: msearchdb-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"
+    networks:
+      - msearchdb-net
 
 volumes:
   node1-data:

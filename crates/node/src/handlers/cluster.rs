@@ -3,6 +3,8 @@
 //! These endpoints expose the cluster topology, health status, and node
 //! management operations.
 
+use std::collections::HashMap;
+
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -10,7 +12,7 @@ use axum::Json;
 
 use msearchdb_core::cluster::{ClusterState, NodeAddress, NodeId, NodeInfo, NodeStatus};
 
-use crate::dto::{ClusterHealthResponse, ErrorResponse, JoinNodeRequest};
+use crate::dto::{ClusterHealthResponse, CollectionHealthInfo, ErrorResponse, JoinNodeRequest};
 use crate::state::AppState;
 
 // ---------------------------------------------------------------------------
@@ -20,20 +22,59 @@ use crate::state::AppState;
 /// Return the cluster health status.
 ///
 /// Health is determined by:
-/// - **green**: leader exists, quorum met.
-/// - **yellow**: leader exists, but degraded.
-/// - **red**: no leader or node is unhealthy.
+/// - **green**: all expected nodes are active (`number_of_nodes == active_nodes`).
+/// - **yellow**: quorum is met (`active_nodes > number_of_nodes / 2`), but not
+///   all nodes are reachable.
+/// - **red**: no quorum (`active_nodes <= number_of_nodes / 2`) or no leader.
 pub async fn cluster_health(State(state): State<AppState>) -> impl IntoResponse {
-    let is_leader = state.raft_node.is_leader();
     let leader_id = state.raft_node.current_leader();
+    let commit_index = state.metrics.raft_commit_index.get();
 
-    let status = if leader_id.is_some() { "green" } else { "red" };
+    // Count active nodes from node health metrics.
+    // For now, single-node mode is always 1 active out of 1 total.
+    let number_of_nodes: u64 = 1;
+    let active_nodes: u64 = 1;
+
+    // Build replication lag map from metrics.
+    // In single-node mode there is no lag to report.
+    let replication_lag = HashMap::new();
+
+    // Build per-collection health information from the in-memory registry.
+    let collections = {
+        let coll = state.collections.read().await;
+        coll.iter()
+            .map(|(name, meta)| {
+                (
+                    name.clone(),
+                    CollectionHealthInfo {
+                        docs: meta.doc_count,
+                        size_bytes: 0, // TODO: estimate from storage
+                    },
+                )
+            })
+            .collect::<HashMap<_, _>>()
+    };
+
+    // Determine overall cluster status.
+    let status = if leader_id.is_none() {
+        "red"
+    } else if active_nodes == number_of_nodes {
+        "green"
+    } else if active_nodes > number_of_nodes / 2 {
+        "yellow"
+    } else {
+        "red"
+    };
 
     let resp = ClusterHealthResponse {
         status: status.to_string(),
-        number_of_nodes: 1, // single-node for now
-        leader_id,
-        is_leader,
+        cluster_name: "msearchdb-cluster".to_string(),
+        number_of_nodes,
+        active_nodes,
+        leader_node: leader_id,
+        raft_commit_index: commit_index,
+        replication_lag,
+        collections,
     };
 
     Json(serde_json::to_value(resp).unwrap())
