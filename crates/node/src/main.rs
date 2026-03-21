@@ -298,7 +298,60 @@ async fn main() {
         "write batcher started"
     );
 
-    // Step 12: Build application state and HTTP router
+    // Step 12: Initialize security components
+    let security_config = msearchdb_core::security::SecurityConfig::default();
+
+    // API key registry — register legacy key if configured.
+    let mut api_key_registry = msearchdb_core::security::ApiKeyRegistry::new();
+    if let Some(ref key) = config.api_key {
+        api_key_registry.register(
+            msearchdb_core::security::ApiKeyEntry::new(key, msearchdb_core::security::Role::Admin)
+                .with_description("legacy config key"),
+        );
+    }
+
+    // JWT manager — only if a secret is configured.
+    let jwt_manager = if !security_config.jwt_secret.is_empty() {
+        Some(Arc::new(msearchdb_core::security::JwtManager::new(
+            &security_config.jwt_secret,
+            Duration::from_secs(security_config.jwt_ttl_secs),
+        )))
+    } else {
+        None
+    };
+
+    // Rate limiter
+    let rate_limiter = Arc::new(msearchdb_core::security::RateLimiter::new(
+        security_config.rate_limit_capacity,
+        security_config.rate_limit_refill_rate,
+    ));
+
+    // Connection counter
+    let connection_counter = Arc::new(msearchdb_core::security::ConnectionCounter::new(
+        security_config.resource_limits.max_connections as u64,
+    ));
+
+    // Audit logger
+    let audit_logger = if security_config.audit_enabled {
+        Arc::new(
+            msearchdb_core::security::AuditLogger::new(&security_config.audit_log_path)
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "failed to create audit logger, using noop");
+                    msearchdb_core::security::AuditLogger::noop()
+                }),
+        )
+    } else {
+        Arc::new(msearchdb_core::security::AuditLogger::noop())
+    };
+
+    tracing::info!(
+        rate_limit_capacity = security_config.rate_limit_capacity,
+        max_connections = security_config.resource_limits.max_connections,
+        audit_enabled = security_config.audit_enabled,
+        "security components initialized"
+    );
+
+    // Step 13: Build application state and HTTP router
     let read_coordinator = Arc::new(ReadCoordinator::new(config.replication_factor));
     let state = AppState {
         raft_node,
@@ -308,6 +361,13 @@ async fn main() {
         collections: Arc::new(RwLock::new(HashMap::new())),
         aliases: Arc::new(RwLock::new(HashMap::new())),
         api_key: config.api_key.clone(),
+        api_key_registry: Arc::new(api_key_registry),
+        jwt_manager,
+        rate_limiter,
+        connection_counter,
+        validation_config: Arc::new(security_config.validation.clone()),
+        audit_logger,
+        security_config: Arc::new(security_config),
         metrics,
         local_node_id: config.node_id,
         read_coordinator,
@@ -319,7 +379,7 @@ async fn main() {
 
     let app = msearchdb_node::build_router(state);
 
-    // Step 13: Start HTTP server with graceful shutdown
+    // Step 14: Start HTTP server with graceful shutdown
     let addr = format!("{}:{}", config.http_host, config.http_port);
     tracing::info!(addr = %addr, "HTTP server listening");
 

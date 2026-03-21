@@ -67,7 +67,7 @@ jieba-rs = "0.6"
 openraft = { version = "0.9", features = ["serde", "storage-v2"] }
 
 # gRPC networking
-tonic = "0.11"
+tonic = { version = "0.11", features = ["tls"] }
 prost = "0.12"
 prost-types = "0.12"
 tonic-build = "0.11"
@@ -103,6 +103,13 @@ hyper = "1"
 
 # Random number generation (used by chaos testing framework)
 rand = "0.8"
+
+# Security / TLS / Auth
+jsonwebtoken = "9"
+rcgen = "0.13"
+rustls = "0.23"
+rustls-pemfile = "2"
+tokio-rustls = "0.26"
 
 # Benchmarking
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }

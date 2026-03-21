@@ -36,6 +36,7 @@ pub mod client;
 pub mod connection_pool;
 pub mod scatter_gather;
 pub mod server;
+pub mod tls;
 
 /// Generated protobuf and gRPC stubs for MSearchDB inter-node communication.
 pub mod proto {

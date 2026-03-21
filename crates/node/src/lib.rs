@@ -159,7 +159,16 @@ pub fn build_router(state: AppState) -> Router {
         .merge(admin_routes)
         .with_state(state.clone());
 
-    // Apply middleware layers (outermost first)
+    // Apply middleware layers (outermost first — request flows top → bottom)
+    //
+    // 1. Timeout: 30 s deadline.
+    // 2. Compression: gzip for responses > 1 KB.
+    // 3. Connection limit: enforce max concurrent connections.
+    // 4. Rate limit: per-key token bucket.
+    // 5. Auth: API key / JWT with RBAC.
+    // 6. Tracing: method, path, status, latency.
+    // 7. RequestId: assign / preserve X-Request-Id.
+    // 8. TraceContext: W3C traceparent propagation.
     app.layer(axum::middleware::from_fn(
         middleware::trace_context_middleware,
     ))
@@ -169,8 +178,16 @@ pub fn build_router(state: AppState) -> Router {
         middleware::tracing_middleware,
     ))
     .layer(axum::middleware::from_fn_with_state(
-        state,
+        state.clone(),
         middleware::auth_middleware,
+    ))
+    .layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        middleware::rate_limit_middleware,
+    ))
+    .layer(axum::middleware::from_fn_with_state(
+        state,
+        middleware::connection_limit_middleware,
     ))
     .layer(CompressionLayer::new())
     .layer(TimeoutLayer::new(Duration::from_secs(30)))

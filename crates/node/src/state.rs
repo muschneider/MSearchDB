@@ -27,6 +27,10 @@ use msearchdb_consensus::raft_node::RaftNode;
 use msearchdb_core::cluster::NodeId;
 use msearchdb_core::collection::{CollectionAlias, CollectionSettings};
 use msearchdb_core::read_coordinator::ReadCoordinator;
+use msearchdb_core::security::{
+    ApiKeyRegistry, AuditLogger, ConnectionCounter, JwtManager, RateLimiter, SecurityConfig,
+    ValidationConfig,
+};
 use msearchdb_core::traits::{IndexBackend, StorageBackend};
 use msearchdb_network::connection_pool::ConnectionPool;
 
@@ -70,9 +74,30 @@ pub struct AppState {
     /// Queries against an alias fan out across all targets and merge results.
     pub aliases: Arc<RwLock<HashMap<String, CollectionAlias>>>,
 
-    /// Optional API key for authentication.
+    /// Optional API key for authentication (legacy single-key mode).
     /// If `None`, authentication is disabled.
     pub api_key: Option<String>,
+
+    /// Role-based API key registry for multi-key authentication.
+    pub api_key_registry: Arc<ApiKeyRegistry>,
+
+    /// JWT manager for token-based authentication.
+    pub jwt_manager: Option<Arc<JwtManager>>,
+
+    /// Per-key rate limiter.
+    pub rate_limiter: Arc<RateLimiter>,
+
+    /// Connection counter for resource limiting.
+    pub connection_counter: Arc<ConnectionCounter>,
+
+    /// Input validation configuration.
+    pub validation_config: Arc<ValidationConfig>,
+
+    /// Audit logger for write operations.
+    pub audit_logger: Arc<AuditLogger>,
+
+    /// Security configuration.
+    pub security_config: Arc<SecurityConfig>,
 
     /// Prometheus metrics registry.
     pub metrics: Arc<Metrics>,

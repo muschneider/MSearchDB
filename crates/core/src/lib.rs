@@ -34,6 +34,7 @@ pub mod error;
 pub mod query;
 pub mod read_coordinator;
 pub mod rebalancer;
+pub mod security;
 pub mod snapshot;
 pub mod traits;
 pub mod vector_clock;
@@ -55,5 +56,9 @@ pub use query::{
 };
 pub use read_coordinator::{ReadCoordinator, ReadResolution, ReplicaResponse};
 pub use rebalancer::{DataMove, RebalancePlan, RebalanceStatus};
+pub use security::{
+    ApiKeyEntry, ApiKeyRegistry, AuditEntry, AuditLogger, ConnectionCounter, JwtClaims, JwtManager,
+    RateLimiter, Role, SecurityConfig, TokenBucket, ValidationConfig,
+};
 pub use snapshot::{SnapshotConfig, SnapshotInfo};
 pub use vector_clock::VectorClock;

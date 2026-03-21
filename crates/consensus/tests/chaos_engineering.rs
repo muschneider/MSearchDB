@@ -635,9 +635,7 @@ fn start_workload(
         while !stop_clone.load(Ordering::Relaxed) {
             let id = format!("{}-{}", prefix, counter);
             let doc = make_doc(&id, &format!("workload-{}", counter));
-            result_clone
-                .total_attempted
-                .fetch_add(1, Ordering::Relaxed);
+            result_clone.total_attempted.fetch_add(1, Ordering::Relaxed);
 
             let mut written = false;
             for (_, raft) in &nodes {
@@ -664,11 +662,7 @@ fn start_workload(
         }
     });
 
-    WorkloadHandle {
-        task,
-        result,
-        stop,
-    }
+    WorkloadHandle { task, result, stop }
 }
 
 // ===========================================================================
@@ -971,7 +965,7 @@ async fn threshold_all_three_fail_data_persists_in_storage() {
         .await;
 
         match result {
-            Err(_) => {} // Timeout — expected.
+            Err(_) => {}     // Timeout — expected.
             Ok(Err(_)) => {} // Consensus error — expected.
             Ok(Ok(resp)) => {
                 assert!(!resp.success, "write must not succeed with all nodes dead");
@@ -1432,7 +1426,10 @@ async fn adv_asymmetric_route_blocks() {
         Duration::from_secs(5),
     )
     .await;
-    assert!(result.is_ok(), "recovery write should succeed after unblock");
+    assert!(
+        result.is_ok(),
+        "recovery write should succeed after unblock"
+    );
 }
 
 /// Mixed simultaneous faults: isolation + delay + packet loss on different
@@ -1707,7 +1704,7 @@ async fn verify_isolation_blocks_rpcs() {
     .await;
 
     match result {
-        Err(_) => {} // Timeout — expected, Raft can't get quorum.
+        Err(_) => {}     // Timeout — expected, Raft can't get quorum.
         Ok(Err(_)) => {} // Consensus error — also fine.
         Ok(Ok(resp)) => {
             assert!(
@@ -1879,5 +1876,8 @@ async fn verify_packet_drop_affects_reliability() {
         Duration::from_secs(5),
     )
     .await;
-    assert!(result.is_ok(), "cluster should recover after packet loss stops");
+    assert!(
+        result.is_ok(),
+        "cluster should recover after packet loss stops"
+    );
 }

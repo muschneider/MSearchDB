@@ -48,6 +48,11 @@ moka = { workspace = true }
 zstd = { workspace = true }
 tar = { workspace = true }
 tokio-util = { workspace = true }
+jsonwebtoken = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+rand = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

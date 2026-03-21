@@ -230,45 +230,234 @@ pub async fn tracing_middleware(
 // Auth middleware
 // ---------------------------------------------------------------------------
 
-/// Middleware that checks the `X-API-Key` header against the configured key.
+/// Determine the minimum [`Role`] required for the given request.
 ///
-/// If no API key is configured in [`AppState`], all requests pass through.
-/// If a key is configured but the request header is missing or wrong, a
-/// `401 Unauthorized` JSON response is returned.
+/// - **Admin**: cluster management, node join, restore, collection create/delete.
+/// - **Writer**: document index/update/delete, bulk, refresh.
+/// - **Reader**: search, get document, cluster health, stats, metrics.
+fn required_role(method: &http::Method, path: &str) -> msearchdb_core::security::Role {
+    use msearchdb_core::security::Role;
+
+    // Admin-only operations
+    if path.starts_with("/_nodes/") && path.ends_with("/_join") {
+        return Role::Admin;
+    }
+    if path == "/_restore" {
+        return Role::Admin;
+    }
+    if path == "/_snapshot" && *method == http::Method::POST {
+        return Role::Admin;
+    }
+
+    // Collection management requires admin
+    if path.starts_with("/collections/")
+        && !path.contains("/docs")
+        && !path.contains("/_search")
+        && !path.contains("/_refresh")
+        && (*method == http::Method::PUT || *method == http::Method::DELETE)
+    {
+        return Role::Admin;
+    }
+
+    // Write operations
+    if *method == http::Method::POST
+        || *method == http::Method::PUT
+        || *method == http::Method::DELETE
+    {
+        // Search POST is a read
+        if path.contains("/_search") {
+            return Role::Reader;
+        }
+        return Role::Writer;
+    }
+
+    // Everything else (GET, HEAD, OPTIONS) is read
+    Role::Reader
+}
+
+/// Middleware that authenticates via API key or JWT token with role-based access.
+///
+/// Authentication is checked in this order:
+/// 1. `X-API-Key` header → looked up in the API key registry.
+/// 2. `Authorization: Bearer <token>` header → verified as JWT.
+/// 3. Legacy single-key mode (`state.api_key`) for backward compatibility.
+///
+/// If no authentication is configured at all, all requests pass through.
 pub async fn auth_middleware(
     State(state): State<AppState>,
     request: Request<Body>,
     next: Next,
 ) -> Response {
-    // If no API key is configured, skip auth entirely.
-    let expected_key = match &state.api_key {
-        Some(key) => key,
-        None => return next.run(request).await,
-    };
+    use msearchdb_core::security::Role;
 
-    let provided_key = request
+    let method = request.method().clone();
+    let path = request.uri().path().to_owned();
+    let role_needed = required_role(&method, &path);
+
+    // Check if any auth is configured at all.
+    let has_registry = !state.api_key_registry.is_empty();
+    let has_jwt = state.jwt_manager.is_some();
+    let has_legacy_key = state.api_key.is_some();
+
+    if !has_registry && !has_jwt && !has_legacy_key {
+        // No auth configured — allow all.
+        return next.run(request).await;
+    }
+
+    // Extract credentials from headers.
+    let api_key = request
         .headers()
         .get("x-api-key")
-        .and_then(|v| v.to_str().ok());
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_owned());
 
-    match provided_key {
-        Some(key) if key == expected_key => next.run(request).await,
-        _ => {
-            let body = json!({
-                "error": {
-                    "type": "unauthorized",
-                    "reason": "invalid or missing API key"
-                },
-                "status": 401
-            });
-            (
-                StatusCode::UNAUTHORIZED,
-                [(header::CONTENT_TYPE, "application/json")],
-                serde_json::to_string(&body).unwrap(),
-            )
-                .into_response()
+    let bearer_token = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer ").map(|t| t.to_owned()));
+
+    // 1. Try API key registry (role-based).
+    if let Some(ref key) = api_key {
+        if let Some(entry) = state.api_key_registry.get(key) {
+            if entry.has_permission(role_needed) {
+                return next.run(request).await;
+            }
+            return json_error(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "insufficient permissions",
+            );
         }
     }
+
+    // 2. Try JWT.
+    if let Some(ref token) = bearer_token {
+        if let Some(ref jwt_mgr) = state.jwt_manager {
+            match jwt_mgr.verify(token) {
+                Ok(claims) => {
+                    let token_role: Result<Role, _> = claims.role.parse();
+                    match token_role {
+                        Ok(r) if r.level() >= role_needed.level() => {
+                            return next.run(request).await;
+                        }
+                        Ok(_) => {
+                            return json_error(
+                                StatusCode::FORBIDDEN,
+                                "forbidden",
+                                "insufficient permissions",
+                            );
+                        }
+                        Err(_) => {
+                            return json_error(
+                                StatusCode::UNAUTHORIZED,
+                                "unauthorized",
+                                "invalid role in JWT",
+                            );
+                        }
+                    }
+                }
+                Err(_) => {
+                    return json_error(
+                        StatusCode::UNAUTHORIZED,
+                        "unauthorized",
+                        "invalid or expired JWT token",
+                    );
+                }
+            }
+        }
+    }
+
+    // 3. Legacy single-key fallback (all-or-nothing, admin role).
+    if let Some(ref expected) = state.api_key {
+        if let Some(ref provided) = api_key {
+            if provided == expected {
+                return next.run(request).await;
+            }
+        }
+    }
+
+    json_error(
+        StatusCode::UNAUTHORIZED,
+        "unauthorized",
+        "invalid or missing API key",
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Rate limiting middleware
+// ---------------------------------------------------------------------------
+
+/// Middleware that enforces per-key rate limiting using a token bucket.
+///
+/// The rate limit key is the API key from the `X-API-Key` header, or
+/// `"anonymous"` if no key is provided.  When the rate limit is exceeded,
+/// a `429 Too Many Requests` response is returned.
+pub async fn rate_limit_middleware(
+    State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    let key = request
+        .headers()
+        .get("x-api-key")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("anonymous")
+        .to_owned();
+
+    if !state.rate_limiter.try_acquire(&key).await {
+        return json_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited",
+            "rate limit exceeded — try again later",
+        );
+    }
+
+    next.run(request).await
+}
+
+// ---------------------------------------------------------------------------
+// Connection limit middleware
+// ---------------------------------------------------------------------------
+
+/// Middleware that enforces a maximum connection limit per node.
+///
+/// Returns `503 Service Unavailable` when the limit is reached.
+pub async fn connection_limit_middleware(
+    State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    if !state.connection_counter.try_acquire() {
+        return json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "connection_limit",
+            "maximum connection limit reached",
+        );
+    }
+
+    let response = next.run(request).await;
+
+    state.connection_counter.release();
+
+    response
+}
+
+/// Helper to build a JSON error response.
+fn json_error(status: StatusCode, error_type: &str, reason: &str) -> Response {
+    let body = json!({
+        "error": {
+            "type": error_type,
+            "reason": reason
+        },
+        "status": status.as_u16()
+    });
+    (
+        status,
+        [(header::CONTENT_TYPE, "application/json")],
+        serde_json::to_string(&body).unwrap(),
+    )
+        .into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -424,6 +613,10 @@ mod tests {
         use msearchdb_core::document::{Document, DocumentId};
         use msearchdb_core::error::{DbError, DbResult};
         use msearchdb_core::query::{Query, SearchResult};
+        use msearchdb_core::security::{
+            ApiKeyRegistry, AuditLogger, ConnectionCounter, RateLimiter, SecurityConfig,
+            ValidationConfig,
+        };
         use msearchdb_core::traits::{IndexBackend, StorageBackend};
         use msearchdb_network::connection_pool::ConnectionPool;
         use std::collections::HashMap;
@@ -485,6 +678,13 @@ mod tests {
             collections: Arc::new(RwLock::new(HashMap::new())),
             aliases: Arc::new(RwLock::new(HashMap::new())),
             api_key,
+            api_key_registry: Arc::new(ApiKeyRegistry::new()),
+            jwt_manager: None,
+            rate_limiter: Arc::new(RateLimiter::new(100, 10.0)),
+            connection_counter: Arc::new(ConnectionCounter::new(1000)),
+            validation_config: Arc::new(ValidationConfig::default()),
+            audit_logger: Arc::new(AuditLogger::noop()),
+            security_config: Arc::new(SecurityConfig::default()),
             metrics: Arc::new(crate::metrics::Metrics::new()),
             local_node_id: config.node_id,
             read_coordinator: Arc::new(msearchdb_core::read_coordinator::ReadCoordinator::new(
