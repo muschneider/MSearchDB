@@ -151,6 +151,45 @@ impl RaftNode {
         Ok((Self { raft, node_id }, handle))
     }
 
+    /// Create a new Raft node with any [`RaftNetworkFactory`] implementation
+    /// and caller-provided storage and index backends.
+    ///
+    /// This is the most flexible constructor, allowing chaos and integration
+    /// tests to supply custom network factories with fault injection while
+    /// still obtaining a high-level [`RaftNode`] wrapper.
+    pub async fn new_with_any_network<N>(
+        node_id: u64,
+        network: N,
+        storage: Arc<dyn StorageBackend>,
+        index: Arc<dyn IndexBackend>,
+    ) -> DbResult<(Self, Raft<TypeConfig>)>
+    where
+        N: openraft::network::RaftNetworkFactory<TypeConfig>,
+    {
+        let raft_config = Config {
+            heartbeat_interval: 200,
+            election_timeout_min: 500,
+            election_timeout_max: 1000,
+            ..Default::default()
+        };
+
+        let raft_config = Arc::new(
+            raft_config
+                .validate()
+                .map_err(|e| DbError::ConsensusError(format!("invalid raft config: {}", e)))?,
+        );
+
+        let log_store = MemLogStore::new();
+        let state_machine = DbStateMachine::new(storage, index);
+
+        let raft = Raft::new(node_id, raft_config, network, log_store, state_machine)
+            .await
+            .map_err(|e| DbError::ConsensusError(format!("failed to create raft node: {}", e)))?;
+
+        let handle = raft.clone();
+        Ok((Self { raft, node_id }, handle))
+    }
+
     /// Propose a [`RaftCommand`] through Raft consensus.
     ///
     /// Only the **leader** can accept proposals.  If this node is a follower,
