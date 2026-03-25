@@ -169,3 +169,6 @@ temp/
 # Project-specific documentation
 AGENTS.md
 prompts.txt
+session-s*.*
+CLAUDE.md
+STATUS.md
