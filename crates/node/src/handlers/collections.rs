@@ -28,8 +28,9 @@ use crate::state::{AppState, CollectionMeta};
 pub async fn create_collection(
     State(state): State<AppState>,
     Path(name): Path<String>,
-    Json(body): Json<CreateCollectionRequest>,
+    body: Option<Json<CreateCollectionRequest>>,
 ) -> impl IntoResponse {
+    let body = body.map(|Json(b)| b).unwrap_or_default();
     // Check if collection already exists
     {
         let collections = state.collections.read().await;

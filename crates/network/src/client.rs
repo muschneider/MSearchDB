@@ -148,6 +148,11 @@ impl NodeClient {
         &self.addr
     }
 
+    /// Return a reference to the underlying tonic [`Channel`].
+    pub fn channel(&self) -> &Channel {
+        &self.channel
+    }
+
     // -- Raft RPCs ---------------------------------------------------------
 
     /// Send an `AppendEntries` RPC to the remote node.

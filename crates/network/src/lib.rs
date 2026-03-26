@@ -34,6 +34,7 @@
 
 pub mod client;
 pub mod connection_pool;
+pub mod raft_network;
 pub mod scatter_gather;
 pub mod server;
 pub mod tls;

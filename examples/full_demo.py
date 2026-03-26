@@ -678,8 +678,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    global NUM_DOCS
-    NUM_DOCS = args.docs
+    #global NUM_DOCS
+    #NUM_DOCS = args.docs
 
     if args.single:
         hosts = [args.single]

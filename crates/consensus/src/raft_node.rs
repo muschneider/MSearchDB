@@ -80,6 +80,45 @@ impl RaftNode {
         Ok(Self { raft, node_id })
     }
 
+    /// Create a new Raft node with a caller-supplied network factory.
+    ///
+    /// Uses production Raft timings (500 ms heartbeat, 1500–3000 ms election
+    /// timeout).  Pass a [`GrpcNetworkFactory`] to enable real multi-node
+    /// cluster communication over gRPC.
+    pub async fn new_with_network<N>(
+        config: &NodeConfig,
+        storage: Arc<dyn StorageBackend>,
+        index: Arc<dyn IndexBackend>,
+        network: N,
+    ) -> DbResult<Self>
+    where
+        N: openraft::network::RaftNetworkFactory<TypeConfig>,
+    {
+        let raft_config = Config {
+            heartbeat_interval: 500,
+            election_timeout_min: 1500,
+            election_timeout_max: 3000,
+            ..Default::default()
+        };
+
+        let raft_config = Arc::new(
+            raft_config
+                .validate()
+                .map_err(|e| DbError::ConsensusError(format!("invalid raft config: {}", e)))?,
+        );
+
+        let log_store = MemLogStore::new();
+        let state_machine = DbStateMachine::new(storage, index);
+
+        let node_id = config.node_id.as_u64();
+
+        let raft = Raft::new(node_id, raft_config, network, log_store, state_machine)
+            .await
+            .map_err(|e| DbError::ConsensusError(format!("failed to create raft node: {}", e)))?;
+
+        Ok(Self { raft, node_id })
+    }
+
     /// Create a new Raft node with the **channel-based** in-process network.
     ///
     /// Used by integration tests to form a cluster without real I/O.

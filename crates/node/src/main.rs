@@ -205,21 +205,33 @@ async fn main() {
     );
     tracing::info!("Tantivy index ready");
 
-    // Step 6: Create Raft node
+    // Step 6: Create Raft node with gRPC network transport
     tracing::info!("initialising Raft consensus node");
-    let raft_node = RaftNode::new(&config, storage.clone(), index.clone())
-        .await
-        .unwrap_or_else(|e| {
-            tracing::error!(error = %e, "failed to create Raft node");
-            std::process::exit(1);
-        });
+    let grpc_network = msearchdb_network::raft_network::GrpcNetworkFactory;
+    let raft_node = RaftNode::new_with_network(
+        &config,
+        storage.clone(),
+        index.clone(),
+        grpc_network,
+    )
+    .await
+    .unwrap_or_else(|e| {
+        tracing::error!(error = %e, "failed to create Raft node");
+        std::process::exit(1);
+    });
     let raft_node = Arc::new(raft_node);
 
     // Bootstrap single-node cluster if requested
     if cli.bootstrap {
         tracing::info!("bootstrapping single-node Raft cluster");
         let mut members = BTreeMap::new();
-        members.insert(config.node_id.as_u64(), BasicNode::default());
+        let self_addr = format!("{}:{}", config.grpc_host, config.grpc_port);
+        members.insert(
+            config.node_id.as_u64(),
+            BasicNode {
+                addr: self_addr,
+            },
+        );
         if let Err(e) = raft_node.initialize(members).await {
             tracing::warn!(error = %e, "raft init (may already be initialised)");
         }
