@@ -206,10 +206,18 @@ impl proto::node_service_server::NodeService for NodeServiceImpl {
     ) -> Result<Response<proto::JoinResponse>, Status> {
         let inner = request.into_inner();
 
-        let addr = msearchdb_core::cluster::NodeAddress::new(
-            inner.address.clone(),
-            0, // Port is embedded in the address string.
-        );
+        let addr = {
+            // The address arrives as "host:port" from the joining node's
+            // `NodeAddress::Display` impl.  Parse both components so the
+            // `NodeAddress` is well-formed for subsequent connections.
+            let parts: Vec<&str> = inner.address.rsplitn(2, ':').collect();
+            if parts.len() == 2 {
+                let port = parts[0].parse::<u16>().unwrap_or(0);
+                msearchdb_core::cluster::NodeAddress::new(parts[1], port)
+            } else {
+                msearchdb_core::cluster::NodeAddress::new(inner.address.clone(), 0)
+            }
+        };
 
         match self.raft.add_learner(inner.node_id, &addr).await {
             Ok(()) => {
@@ -383,6 +391,35 @@ pub async fn start_grpc_server(
             query_service,
         ))
         .serve(addr)
+        .await
+}
+
+/// Start the gRPC server on a pre-bound TCP listener.
+///
+/// This variant accepts a [`tokio::net::TcpListener`] that is already
+/// listening, which allows the caller to guarantee the port is bound
+/// before proceeding with peer join operations.
+pub async fn start_grpc_server_with_listener(
+    listener: tokio::net::TcpListener,
+    node_service: NodeServiceImpl,
+    query_service: QueryServiceImpl,
+) -> Result<(), tonic::transport::Error> {
+    let local_addr = listener
+        .local_addr()
+        .map(|a| a.to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+    tracing::info!(addr = %local_addr, "starting gRPC server (pre-bound listener)");
+
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+
+    tonic::transport::Server::builder()
+        .add_service(proto::node_service_server::NodeServiceServer::new(
+            node_service,
+        ))
+        .add_service(proto::query_service_server::QueryServiceServer::new(
+            query_service,
+        ))
+        .serve_with_incoming(incoming)
         .await
 }
 

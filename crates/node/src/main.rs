@@ -26,7 +26,9 @@ use msearchdb_core::traits::{IndexBackend, StorageBackend};
 use msearchdb_index::schema_builder::{FieldConfig, FieldType, SchemaConfig};
 use msearchdb_index::tantivy_index::TantivyIndex;
 use msearchdb_network::connection_pool::ConnectionPool;
-use msearchdb_network::server::{start_grpc_server, NodeServiceImpl, QueryServiceImpl};
+use msearchdb_network::server::{
+    start_grpc_server_with_listener, NodeServiceImpl, QueryServiceImpl,
+};
 use msearchdb_node::cache::DocumentCache;
 use msearchdb_node::cluster_manager::ClusterManager;
 use msearchdb_node::metrics::Metrics;
@@ -272,15 +274,23 @@ async fn main() {
     let query_service =
         QueryServiceImpl::new(storage.clone(), index.clone(), config.node_id.as_u64());
 
+    // Bind the TCP listener *before* spawning the server task so we know the
+    // port is open before we attempt any peer join operations.
+    let grpc_listener = tokio::net::TcpListener::bind(grpc_addr)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!(addr = %grpc_addr, error = %e, "failed to bind gRPC listener");
+            std::process::exit(1);
+        });
+    tracing::info!(addr = %grpc_addr, "gRPC server listening");
+
     tokio::spawn(async move {
-        if let Err(e) = start_grpc_server(grpc_addr, node_service, query_service).await {
+        if let Err(e) =
+            start_grpc_server_with_listener(grpc_listener, node_service, query_service).await
+        {
             tracing::error!(error = %e, "gRPC server failed");
         }
     });
-
-    // Give the gRPC listener a moment to bind before attempting peer joins.
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    tracing::info!(addr = %grpc_addr, "gRPC server started");
 
     // Join cluster peers if configured (and not bootstrapping)
     if !cli.bootstrap && !config.peers.is_empty() {
