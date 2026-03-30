@@ -20,6 +20,7 @@
 //! use msearchdb_core::document::{Document, DocumentId, FieldValue};
 //!
 //! let cmd = RaftCommand::InsertDocument {
+//!     collection: "products".into(),
 //!     document: Document::new(DocumentId::new("d1"))
 //!         .with_field("title", FieldValue::Text("hello".into())),
 //! };
@@ -52,18 +53,24 @@ use msearchdb_index::schema_builder::SchemaConfig;
 pub enum RaftCommand {
     /// Insert a new document into the database.
     InsertDocument {
+        /// The collection to insert into.
+        collection: String,
         /// The document to insert.
         document: Document,
     },
 
     /// Delete an existing document by its id.
     DeleteDocument {
+        /// The collection to delete from.
+        collection: String,
         /// The id of the document to remove.
         id: DocumentId,
     },
 
     /// Update an existing document (full replacement).
     UpdateDocument {
+        /// The collection to update in.
+        collection: String,
         /// The replacement document — its id determines which document is updated.
         document: Document,
     },
@@ -88,6 +95,8 @@ pub enum RaftCommand {
     /// entry to amortise consensus overhead. The state machine applies all
     /// documents to storage and index in one pass, then commits the index.
     BatchInsert {
+        /// The collection to insert into.
+        collection: String,
         /// The documents to insert.
         documents: Vec<Document>,
     },
@@ -207,6 +216,7 @@ mod tests {
     #[test]
     fn raft_command_insert_serde_roundtrip() {
         let cmd = RaftCommand::InsertDocument {
+            collection: "products".into(),
             document: Document::new(DocumentId::new("doc-1"))
                 .with_field("title", FieldValue::Text("hello".into())),
         };
@@ -219,6 +229,7 @@ mod tests {
     #[test]
     fn raft_command_delete_serde_roundtrip() {
         let cmd = RaftCommand::DeleteDocument {
+            collection: "products".into(),
             id: DocumentId::new("doc-2"),
         };
 
@@ -230,6 +241,7 @@ mod tests {
     #[test]
     fn raft_command_update_serde_roundtrip() {
         let cmd = RaftCommand::UpdateDocument {
+            collection: "products".into(),
             document: Document::new(DocumentId::new("doc-3"))
                 .with_field("score", FieldValue::Number(9.5)),
         };
@@ -294,6 +306,7 @@ mod tests {
                 .with_field("title", FieldValue::Text("second".into())),
         ];
         let cmd = RaftCommand::BatchInsert {
+            collection: "products".into(),
             documents: docs.clone(),
         };
 

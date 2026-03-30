@@ -150,6 +150,7 @@ pub async fn bulk_index(
                 } else {
                     pending_deletes.push((
                         RaftCommand::DeleteDocument {
+                            collection: collection.clone(),
                             id: DocumentId::new(&id_str),
                         },
                         id_str,
@@ -183,22 +184,10 @@ pub async fn bulk_index(
         docs_indexed += batch_count;
     }
 
-    // Execute pending deletes individually
+    // Execute pending deletes individually — storage/index handled by state machine.
     for (cmd, id) in pending_deletes {
         match state.raft_node.propose(cmd).await {
             Ok(_) => {
-                let doc_id = DocumentId::new(&id);
-                // Delete from collection-specific storage.
-                let _ = state
-                    .storage
-                    .delete_from_collection(&collection, &doc_id)
-                    .await;
-                // Delete from collection-specific index.
-                let _ = state
-                    .index
-                    .delete_document_from_collection(&collection, &doc_id)
-                    .await;
-
                 items.push(BulkItem {
                     action: "delete".into(),
                     id,
@@ -217,9 +206,6 @@ pub async fn bulk_index(
             }
         }
     }
-
-    // Commit collection index after all bulk operations.
-    let _ = state.index.commit_collection_index(&collection).await;
 
     // Update doc count
     {
@@ -242,9 +228,8 @@ pub async fn bulk_index(
 
 /// Flush a batch of documents as a single [`RaftCommand::BatchInsert`].
 ///
-/// After Raft consensus, each document is stored in the collection-specific
-/// RocksDB column family and indexed in the collection-specific Tantivy
-/// index with dynamic field mapping.
+/// The Raft state machine handles storage and index writes. This function
+/// proposes the batch through Raft and reports per-item results.
 ///
 /// Returns `(per_item_results, had_errors, success_count)`.
 async fn flush_insert_batch(
@@ -256,85 +241,36 @@ async fn flush_insert_batch(
     let documents: Vec<Document> = batch.into_iter().map(|(doc, _)| doc).collect();
     let batch_len = documents.len();
 
-    match state.raft_node.propose_batch(documents.clone()).await {
+    let cmd = RaftCommand::BatchInsert {
+        collection: collection.to_owned(),
+        documents,
+    };
+
+    match state.raft_node.propose(cmd).await {
         Ok(resp) => {
             let count = resp.affected_count;
             let mut items: Vec<BulkItem> = Vec::with_capacity(batch_len);
             let mut success_count: u64 = 0;
-            let mut has_errors = false;
+            let has_errors = count < batch_len;
 
-            // Get the current mapping for dynamic field detection.
-            let mut current_mapping = {
-                let collections = state.collections.read().await;
-                match collections.get(collection) {
-                    Some(meta) => meta.mapping.clone(),
-                    None => msearchdb_core::collection::FieldMapping::new(),
-                }
-            };
-
-            for (idx, (doc, id)) in documents.into_iter().zip(ids.into_iter()).enumerate() {
+            for (idx, id) in ids.into_iter().enumerate() {
                 if idx >= count {
                     // Documents beyond the success count failed inside the
                     // state machine (storage/index error).
-                    has_errors = true;
                     items.push(BulkItem {
                         action: "index".into(),
                         id,
                         status: 500,
                         error: Some("failed during batch apply".into()),
                     });
-                    continue;
-                }
-
-                // Store in collection-specific storage.
-                if let Err(e) = state
-                    .storage
-                    .put_in_collection(collection, doc.clone())
-                    .await
-                {
-                    has_errors = true;
+                } else {
+                    success_count += 1;
                     items.push(BulkItem {
                         action: "index".into(),
                         id,
-                        status: 500,
-                        error: Some(format!("storage error: {}", e)),
+                        status: 201,
+                        error: None,
                     });
-                    continue;
-                }
-
-                // Index in collection-specific index with dynamic mapping.
-                match state
-                    .index
-                    .index_document_in_collection(collection, &doc, &current_mapping)
-                    .await
-                {
-                    Ok(updated_mapping) => {
-                        current_mapping = updated_mapping;
-                        success_count += 1;
-                        items.push(BulkItem {
-                            action: "index".into(),
-                            id,
-                            status: 201,
-                            error: None,
-                        });
-                    }
-                    Err(e) => {
-                        has_errors = true;
-                        items.push(BulkItem {
-                            action: "index".into(),
-                            id,
-                            status: 500,
-                            error: Some(format!("index error: {}", e)),
-                        });
-                    }
-                }
-            }
-
-            // Persist the updated mapping back to the collection metadata.
-            {
-                let mut collections = state.collections.write().await;
-                if let Some(meta) = collections.get_mut(collection) {
-                    meta.mapping = current_mapping;
                 }
             }
 

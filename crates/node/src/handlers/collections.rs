@@ -66,17 +66,7 @@ pub async fn create_collection(
 
     match state.raft_node.propose(cmd).await {
         Ok(_resp) => {
-            // Create the per-collection storage column family.
-            if let Err(e) = state.storage.create_collection(&name).await {
-                tracing::error!(collection = %name, error = %e, "failed to create storage CF");
-                return db_error_to_status_json(e);
-            }
-
-            // Create the per-collection Tantivy index.
-            if let Err(e) = state.index.create_collection_index(&name).await {
-                tracing::error!(collection = %name, error = %e, "failed to create collection index");
-                return db_error_to_status_json(e);
-            }
+            // The Raft state machine handles storage CF and index creation.
 
             let mut collections = state.collections.write().await;
             collections.insert(
@@ -135,15 +125,7 @@ pub async fn delete_collection(
 
     match state.raft_node.propose(cmd).await {
         Ok(_) => {
-            // Drop the per-collection storage column family.
-            if let Err(e) = state.storage.drop_collection(&name).await {
-                tracing::warn!(collection = %name, error = %e, "failed to drop storage CF");
-            }
-
-            // Drop the per-collection Tantivy index.
-            if let Err(e) = state.index.drop_collection_index(&name).await {
-                tracing::warn!(collection = %name, error = %e, "failed to drop collection index");
-            }
+            // The Raft state machine handles storage CF and index deletion.
 
             let mut collections = state.collections.write().await;
             collections.remove(&name);

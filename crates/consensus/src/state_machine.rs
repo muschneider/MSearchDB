@@ -127,72 +127,140 @@ impl DbStateMachine {
     /// Returns a [`RaftResponse`] describing the outcome.
     async fn apply_command(&self, cmd: &RaftCommand) -> RaftResponse {
         match cmd {
-            RaftCommand::InsertDocument { document } => {
+            RaftCommand::InsertDocument {
+                collection,
+                document,
+            } => {
                 let id = document.id.clone();
-                if let Err(e) = self.storage.put(document.clone()).await {
-                    tracing::error!(error = %e, doc_id = %id, "failed to insert document into storage");
+                if let Err(e) = self
+                    .storage
+                    .put_in_collection(collection, document.clone())
+                    .await
+                {
+                    tracing::error!(error = %e, doc_id = %id, collection = %collection, "failed to insert document into storage");
                     return RaftResponse::fail();
                 }
-                if let Err(e) = self.index.index_document(document).await {
-                    tracing::error!(error = %e, doc_id = %id, "failed to index document");
+                if let Err(e) = self
+                    .index
+                    .index_document_in_collection(
+                        collection,
+                        document,
+                        &msearchdb_core::collection::FieldMapping::new(),
+                    )
+                    .await
+                {
+                    tracing::error!(error = %e, doc_id = %id, collection = %collection, "failed to index document");
                     // Storage succeeded but index failed — log and continue.
                     // A background reconciliation task would fix this.
                 }
                 RaftResponse::ok(id)
             }
 
-            RaftCommand::DeleteDocument { id } => {
-                if let Err(e) = self.storage.delete(id).await {
-                    tracing::error!(error = %e, doc_id = %id, "failed to delete document from storage");
+            RaftCommand::DeleteDocument { collection, id } => {
+                if let Err(e) = self.storage.delete_from_collection(collection, id).await {
+                    tracing::error!(error = %e, doc_id = %id, collection = %collection, "failed to delete document from storage");
                     return RaftResponse::fail();
                 }
-                if let Err(e) = self.index.delete_document(id).await {
-                    tracing::error!(error = %e, doc_id = %id, "failed to remove document from index");
+                if let Err(e) = self
+                    .index
+                    .delete_document_from_collection(collection, id)
+                    .await
+                {
+                    tracing::error!(error = %e, doc_id = %id, collection = %collection, "failed to remove document from index");
                 }
                 RaftResponse::ok(id.clone())
             }
 
-            RaftCommand::UpdateDocument { document } => {
+            RaftCommand::UpdateDocument {
+                collection,
+                document,
+            } => {
                 let id = document.id.clone();
-                if let Err(e) = self.storage.put(document.clone()).await {
-                    tracing::error!(error = %e, doc_id = %id, "failed to update document in storage");
+                if let Err(e) = self
+                    .storage
+                    .put_in_collection(collection, document.clone())
+                    .await
+                {
+                    tracing::error!(error = %e, doc_id = %id, collection = %collection, "failed to update document in storage");
                     return RaftResponse::fail();
                 }
-                // Re-index the updated document.
-                if let Err(e) = self.index.index_document(document).await {
-                    tracing::error!(error = %e, doc_id = %id, "failed to re-index document");
+                // Delete old version from index, then re-index the updated document.
+                let _ = self
+                    .index
+                    .delete_document_from_collection(collection, &id)
+                    .await;
+                if let Err(e) = self
+                    .index
+                    .index_document_in_collection(
+                        collection,
+                        document,
+                        &msearchdb_core::collection::FieldMapping::new(),
+                    )
+                    .await
+                {
+                    tracing::error!(error = %e, doc_id = %id, collection = %collection, "failed to re-index document");
                 }
                 RaftResponse::ok(id)
             }
 
             RaftCommand::CreateCollection { name, schema: _ } => {
-                tracing::info!(collection = %name, "collection created (schema stored in metadata)");
+                if let Err(e) = self.storage.create_collection(name).await {
+                    tracing::error!(error = %e, collection = %name, "failed to create storage collection");
+                    return RaftResponse::fail();
+                }
+                if let Err(e) = self.index.create_collection_index(name).await {
+                    tracing::error!(error = %e, collection = %name, "failed to create collection index");
+                    // Storage succeeded but index failed — log and continue.
+                }
+                tracing::info!(collection = %name, "collection created");
                 RaftResponse::ok_no_id()
             }
 
             RaftCommand::DeleteCollection { name } => {
+                if let Err(e) = self.storage.drop_collection(name).await {
+                    tracing::error!(error = %e, collection = %name, "failed to drop storage collection");
+                    // Continue — best effort.
+                }
+                if let Err(e) = self.index.drop_collection_index(name).await {
+                    tracing::error!(error = %e, collection = %name, "failed to drop collection index");
+                }
                 tracing::info!(collection = %name, "collection deleted");
                 RaftResponse::ok_no_id()
             }
 
-            RaftCommand::BatchInsert { documents } => {
+            RaftCommand::BatchInsert {
+                collection,
+                documents,
+            } => {
                 let total = documents.len();
                 let mut success_count = 0usize;
 
                 for doc in documents {
                     let id = doc.id.clone();
-                    if let Err(e) = self.storage.put(doc.clone()).await {
-                        tracing::error!(error = %e, doc_id = %id, "batch: failed to store document");
+                    if let Err(e) = self
+                        .storage
+                        .put_in_collection(collection, doc.clone())
+                        .await
+                    {
+                        tracing::error!(error = %e, doc_id = %id, collection = %collection, "batch: failed to store document");
                         continue;
                     }
-                    if let Err(e) = self.index.index_document(doc).await {
-                        tracing::error!(error = %e, doc_id = %id, "batch: failed to index document");
+                    if let Err(e) = self
+                        .index
+                        .index_document_in_collection(
+                            collection,
+                            doc,
+                            &msearchdb_core::collection::FieldMapping::new(),
+                        )
+                        .await
+                    {
+                        tracing::error!(error = %e, doc_id = %id, collection = %collection, "batch: failed to index document");
                         // Storage succeeded but index failed — count as partial success.
                     }
                     success_count += 1;
                 }
 
-                tracing::info!(total, success_count, "batch insert applied");
+                tracing::info!(total, success_count, collection = %collection, "batch insert applied");
 
                 if success_count == total {
                     RaftResponse::ok_batch(success_count)
@@ -244,7 +312,7 @@ impl RaftStateMachine<TypeConfig> for DbStateMachine {
         I::IntoIter: Send,
     {
         let mut responses = Vec::new();
-        let mut needs_index_commit = false;
+        let mut collections_to_commit: Vec<String> = Vec::new();
 
         for entry in entries {
             let log_id = entry.log_id;
@@ -256,13 +324,17 @@ impl RaftStateMachine<TypeConfig> for DbStateMachine {
                     responses.push(RaftResponse::ok_no_id());
                 }
                 EntryPayload::Normal(cmd) => {
-                    // Track whether we need a commit after this batch of entries.
-                    if matches!(cmd, RaftCommand::BatchInsert { .. })
-                        || matches!(cmd, RaftCommand::InsertDocument { .. })
-                        || matches!(cmd, RaftCommand::UpdateDocument { .. })
-                        || matches!(cmd, RaftCommand::DeleteDocument { .. })
-                    {
-                        needs_index_commit = true;
+                    // Track collections that need index commits after this batch.
+                    match &cmd {
+                        RaftCommand::InsertDocument { collection, .. }
+                        | RaftCommand::UpdateDocument { collection, .. }
+                        | RaftCommand::DeleteDocument { collection, .. }
+                        | RaftCommand::BatchInsert { collection, .. } => {
+                            if !collections_to_commit.contains(collection) {
+                                collections_to_commit.push(collection.clone());
+                            }
+                        }
+                        _ => {}
                     }
                     let resp = self.apply_command(&cmd).await;
                     responses.push(resp);
@@ -274,11 +346,11 @@ impl RaftStateMachine<TypeConfig> for DbStateMachine {
             }
         }
 
-        // Commit the index once after processing all entries in this batch.
+        // Commit the index once per collection after processing all entries.
         // This amortises the expensive Tantivy commit across many entries.
-        if needs_index_commit {
-            if let Err(e) = self.index.commit_index().await {
-                tracing::error!(error = %e, "failed to commit index after apply batch");
+        for collection in &collections_to_commit {
+            if let Err(e) = self.index.commit_collection_index(collection).await {
+                tracing::error!(error = %e, collection = %collection, "failed to commit collection index after apply batch");
             }
         }
 
@@ -396,6 +468,7 @@ impl RaftSnapshotBuilder<TypeConfig> for DbSnapshotBuilder {
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use msearchdb_core::collection::FieldMapping;
     use msearchdb_core::document::FieldValue;
     use msearchdb_core::error::{DbError, DbResult};
     use msearchdb_core::query::{Query, SearchResult};
@@ -406,15 +479,23 @@ mod tests {
 
     // -- Mock StorageBackend ------------------------------------------------
 
+    /// In-memory storage backend that supports collection-scoped operations.
     struct MockStorage {
         docs: Mutex<HashMap<String, Document>>,
+        /// Collection-scoped documents keyed by "collection:doc_id".
+        collection_docs: Mutex<HashMap<String, Document>>,
     }
 
     impl MockStorage {
         fn new() -> Self {
             Self {
                 docs: Mutex::new(HashMap::new()),
+                collection_docs: Mutex::new(HashMap::new()),
             }
+        }
+
+        fn collection_key(collection: &str, id: &str) -> String {
+            format!("{}:{}", collection, id)
         }
     }
 
@@ -448,6 +529,49 @@ mod tests {
             let docs = self.docs.lock().await;
             Ok(docs.values().cloned().collect())
         }
+
+        async fn create_collection(&self, _name: &str) -> DbResult<()> {
+            Ok(())
+        }
+
+        async fn drop_collection(&self, _name: &str) -> DbResult<()> {
+            Ok(())
+        }
+
+        async fn put_in_collection(
+            &self,
+            collection: &str,
+            document: Document,
+        ) -> DbResult<()> {
+            let key = Self::collection_key(collection, document.id.as_str());
+            let mut docs = self.collection_docs.lock().await;
+            docs.insert(key, document);
+            Ok(())
+        }
+
+        async fn get_from_collection(
+            &self,
+            collection: &str,
+            id: &DocumentId,
+        ) -> DbResult<Document> {
+            let key = Self::collection_key(collection, id.as_str());
+            let docs = self.collection_docs.lock().await;
+            docs.get(&key)
+                .cloned()
+                .ok_or_else(|| DbError::NotFound(id.to_string()))
+        }
+
+        async fn delete_from_collection(
+            &self,
+            collection: &str,
+            id: &DocumentId,
+        ) -> DbResult<()> {
+            let key = Self::collection_key(collection, id.as_str());
+            let mut docs = self.collection_docs.lock().await;
+            docs.remove(&key)
+                .map(|_| ())
+                .ok_or_else(|| DbError::NotFound(id.to_string()))
+        }
     }
 
     // -- Mock IndexBackend --------------------------------------------------
@@ -467,6 +591,35 @@ mod tests {
         async fn delete_document(&self, _id: &DocumentId) -> DbResult<()> {
             Ok(())
         }
+
+        async fn create_collection_index(&self, _name: &str) -> DbResult<()> {
+            Ok(())
+        }
+
+        async fn drop_collection_index(&self, _name: &str) -> DbResult<()> {
+            Ok(())
+        }
+
+        async fn index_document_in_collection(
+            &self,
+            _collection: &str,
+            _document: &Document,
+            mapping: &FieldMapping,
+        ) -> DbResult<FieldMapping> {
+            Ok(mapping.clone())
+        }
+
+        async fn delete_document_from_collection(
+            &self,
+            _collection: &str,
+            _id: &DocumentId,
+        ) -> DbResult<()> {
+            Ok(())
+        }
+
+        async fn commit_collection_index(&self, _name: &str) -> DbResult<()> {
+            Ok(())
+        }
     }
 
     fn make_sm() -> DbStateMachine {
@@ -481,14 +634,19 @@ mod tests {
             .with_field("title", FieldValue::Text("test".into()));
 
         let cmd = RaftCommand::InsertDocument {
+            collection: "products".into(),
             document: doc.clone(),
         };
         let resp = sm.apply_command(&cmd).await;
         assert!(resp.success);
         assert_eq!(resp.document_id, Some(DocumentId::new("t1")));
 
-        // Verify the document is in storage.
-        let fetched = sm.storage.get(&DocumentId::new("t1")).await.unwrap();
+        // Verify the document is in collection-scoped storage.
+        let fetched = sm
+            .storage
+            .get_from_collection("products", &DocumentId::new("t1"))
+            .await
+            .unwrap();
         assert_eq!(fetched.id, doc.id);
     }
 
@@ -496,19 +654,26 @@ mod tests {
     async fn apply_delete_removes_document() {
         let sm = make_sm();
 
-        // Insert first
+        // Insert first via collection-scoped storage.
         let doc = Document::new(DocumentId::new("t2"));
-        sm.storage.put(doc).await.unwrap();
+        sm.storage
+            .put_in_collection("products", doc)
+            .await
+            .unwrap();
 
         // Delete via command
         let cmd = RaftCommand::DeleteDocument {
+            collection: "products".into(),
             id: DocumentId::new("t2"),
         };
         let resp = sm.apply_command(&cmd).await;
         assert!(resp.success);
 
         // Verify removal
-        let result = sm.storage.get(&DocumentId::new("t2")).await;
+        let result = sm
+            .storage
+            .get_from_collection("products", &DocumentId::new("t2"))
+            .await;
         assert!(result.is_err());
     }
 
@@ -516,19 +681,27 @@ mod tests {
     async fn apply_update_replaces_document() {
         let sm = make_sm();
 
-        // Insert
+        // Insert via collection-scoped storage.
         let doc = Document::new(DocumentId::new("t3")).with_field("v", FieldValue::Number(1.0));
-        sm.storage.put(doc).await.unwrap();
+        sm.storage
+            .put_in_collection("products", doc)
+            .await
+            .unwrap();
 
         // Update
         let updated = Document::new(DocumentId::new("t3")).with_field("v", FieldValue::Number(2.0));
         let cmd = RaftCommand::UpdateDocument {
+            collection: "products".into(),
             document: updated.clone(),
         };
         let resp = sm.apply_command(&cmd).await;
         assert!(resp.success);
 
-        let fetched = sm.storage.get(&DocumentId::new("t3")).await.unwrap();
+        let fetched = sm
+            .storage
+            .get_from_collection("products", &DocumentId::new("t3"))
+            .await
+            .unwrap();
         assert_eq!(fetched.get_field("v"), Some(&FieldValue::Number(2.0)));
     }
 
@@ -566,17 +739,18 @@ mod tests {
             .collect();
 
         let cmd = RaftCommand::BatchInsert {
+            collection: "products".into(),
             documents: docs.clone(),
         };
         let resp = sm.apply_command(&cmd).await;
         assert!(resp.success);
         assert_eq!(resp.affected_count, 100);
 
-        // Verify all documents are in storage.
+        // Verify all documents are in collection-scoped storage.
         for i in 0..100 {
             let fetched = sm
                 .storage
-                .get(&DocumentId::new(format!("batch-{}", i)))
+                .get_from_collection("products", &DocumentId::new(format!("batch-{}", i)))
                 .await
                 .unwrap();
             assert_eq!(
@@ -589,7 +763,10 @@ mod tests {
     #[tokio::test]
     async fn apply_batch_insert_empty_succeeds() {
         let sm = make_sm();
-        let cmd = RaftCommand::BatchInsert { documents: vec![] };
+        let cmd = RaftCommand::BatchInsert {
+            collection: "products".into(),
+            documents: vec![],
+        };
         let resp = sm.apply_command(&cmd).await;
         // Empty batch is a no-op — zero affected but still "success" (all 0 of 0 succeeded).
         assert!(resp.success || resp.affected_count == 0);

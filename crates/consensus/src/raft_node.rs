@@ -10,7 +10,7 @@
 //! let node = RaftNode::new(config, storage, index, network_factory).await?;
 //!
 //! // Only the leader can propose writes.
-//! let response = node.propose(RaftCommand::InsertDocument { document }).await?;
+//! let response = node.propose(RaftCommand::InsertDocument { collection: "docs".into(), document }).await?;
 //! ```
 
 use std::collections::BTreeMap;
@@ -85,6 +85,9 @@ impl RaftNode {
     /// Uses production Raft timings (500 ms heartbeat, 1500–3000 ms election
     /// timeout).  Pass a [`GrpcNetworkFactory`] to enable real multi-node
     /// cluster communication over gRPC.
+    ///
+    /// When `config.data_dir` is set, a durable [`RocksDbLogStore`] is used
+    /// at `{data_dir}/raft-log/`.  Otherwise falls back to [`MemLogStore`].
     pub async fn new_with_network<N>(
         config: &NodeConfig,
         storage: Arc<dyn StorageBackend>,
@@ -107,16 +110,51 @@ impl RaftNode {
                 .map_err(|e| DbError::ConsensusError(format!("invalid raft config: {}", e)))?,
         );
 
-        let log_store = MemLogStore::new();
         let state_machine = DbStateMachine::new(storage, index);
-
         let node_id = config.node_id.as_u64();
 
-        let raft = Raft::new(node_id, raft_config, network, log_store, state_machine)
-            .await
-            .map_err(|e| DbError::ConsensusError(format!("failed to create raft node: {}", e)))?;
+        // Use durable RocksDB log store when a data directory is configured.
+        let raft_log_dir = config.data_dir.join("raft-log");
+        if let Err(e) = std::fs::create_dir_all(&raft_log_dir) {
+            tracing::warn!(error = %e, "failed to create raft-log directory, falling back to in-memory");
+            let log_store = MemLogStore::new();
+            let raft = Raft::new(node_id, raft_config, network, log_store, state_machine)
+                .await
+                .map_err(|e| {
+                    DbError::ConsensusError(format!("failed to create raft node: {}", e))
+                })?;
+            return Ok(Self { raft, node_id });
+        }
 
-        Ok(Self { raft, node_id })
+        match crate::rocksdb_log_store::RocksDbLogStore::new(&raft_log_dir) {
+            Ok(log_store) => {
+                tracing::info!(path = %raft_log_dir.display(), "using durable RocksDB Raft log store");
+                let raft =
+                    Raft::new(node_id, raft_config, network, log_store, state_machine)
+                        .await
+                        .map_err(|e| {
+                            DbError::ConsensusError(format!(
+                                "failed to create raft node: {}",
+                                e
+                            ))
+                        })?;
+                Ok(Self { raft, node_id })
+            }
+            Err(e) => {
+                tracing::warn!(error = ?e, "failed to open RocksDB log store, falling back to in-memory");
+                let log_store = MemLogStore::new();
+                let raft =
+                    Raft::new(node_id, raft_config, network, log_store, state_machine)
+                        .await
+                        .map_err(|e| {
+                            DbError::ConsensusError(format!(
+                                "failed to create raft node: {}",
+                                e
+                            ))
+                        })?;
+                Ok(Self { raft, node_id })
+            }
+        }
     }
 
     /// Create a new Raft node with the **channel-based** in-process network.
@@ -278,9 +316,13 @@ impl RaftNode {
     /// one entry.
     pub async fn propose_batch(
         &self,
+        collection: impl Into<String>,
         documents: Vec<msearchdb_core::document::Document>,
     ) -> DbResult<RaftResponse> {
-        let cmd = RaftCommand::BatchInsert { documents };
+        let cmd = RaftCommand::BatchInsert {
+            collection: collection.into(),
+            documents,
+        };
         self.propose(cmd).await
     }
 
@@ -374,6 +416,8 @@ use tokio::sync::Mutex;
 /// implementation.
 pub struct InMemoryStorage {
     docs: Mutex<HashMap<String, Document>>,
+    /// Collection-scoped documents keyed by "collection:doc_id".
+    collection_docs: Mutex<HashMap<String, Document>>,
 }
 
 impl Default for InMemoryStorage {
@@ -387,7 +431,18 @@ impl InMemoryStorage {
     pub fn new() -> Self {
         Self {
             docs: Mutex::new(HashMap::new()),
+            collection_docs: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Construct a collection-scoped key for the internal hash map.
+    fn collection_key(collection: &str, id: &str) -> String {
+        format!("{}:{}", collection, id)
+    }
+
+    /// Return the number of documents in collection-scoped storage.
+    pub async fn collection_doc_count(&self) -> usize {
+        self.collection_docs.lock().await.len()
     }
 }
 
@@ -421,6 +476,60 @@ impl StorageBackend for InMemoryStorage {
         let docs = self.docs.lock().await;
         Ok(docs.values().cloned().collect())
     }
+
+    async fn create_collection(&self, _name: &str) -> CoreResult<()> {
+        Ok(())
+    }
+
+    async fn drop_collection(&self, _name: &str) -> CoreResult<()> {
+        Ok(())
+    }
+
+    async fn put_in_collection(
+        &self,
+        collection: &str,
+        document: Document,
+    ) -> CoreResult<()> {
+        let key = Self::collection_key(collection, document.id.as_str());
+        // Store in both collection-scoped and global maps so that global
+        // `get()` / `scan()` still work for tests that use them.
+        {
+            let mut global = self.docs.lock().await;
+            global.insert(document.id.as_str().to_owned(), document.clone());
+        }
+        let mut docs = self.collection_docs.lock().await;
+        docs.insert(key, document);
+        Ok(())
+    }
+
+    async fn get_from_collection(
+        &self,
+        collection: &str,
+        id: &DocumentId,
+    ) -> CoreResult<Document> {
+        let key = Self::collection_key(collection, id.as_str());
+        let docs = self.collection_docs.lock().await;
+        docs.get(&key)
+            .cloned()
+            .ok_or_else(|| DbError::NotFound(id.to_string()))
+    }
+
+    async fn delete_from_collection(
+        &self,
+        collection: &str,
+        id: &DocumentId,
+    ) -> CoreResult<()> {
+        let key = Self::collection_key(collection, id.as_str());
+        // Remove from both global and collection-scoped maps.
+        {
+            let mut global = self.docs.lock().await;
+            global.remove(id.as_str());
+        }
+        let mut docs = self.collection_docs.lock().await;
+        docs.remove(&key)
+            .map(|_| ())
+            .ok_or_else(|| DbError::NotFound(id.to_string()))
+    }
 }
 
 /// No-op index backend used by [`RaftNode::new_with_channel_network`].
@@ -439,6 +548,35 @@ impl IndexBackend for NoopIndex {
     }
 
     async fn delete_document(&self, _id: &DocumentId) -> CoreResult<()> {
+        Ok(())
+    }
+
+    async fn create_collection_index(&self, _name: &str) -> CoreResult<()> {
+        Ok(())
+    }
+
+    async fn drop_collection_index(&self, _name: &str) -> CoreResult<()> {
+        Ok(())
+    }
+
+    async fn index_document_in_collection(
+        &self,
+        _collection: &str,
+        _document: &Document,
+        mapping: &msearchdb_core::collection::FieldMapping,
+    ) -> CoreResult<msearchdb_core::collection::FieldMapping> {
+        Ok(mapping.clone())
+    }
+
+    async fn delete_document_from_collection(
+        &self,
+        _collection: &str,
+        _id: &DocumentId,
+    ) -> CoreResult<()> {
+        Ok(())
+    }
+
+    async fn commit_collection_index(&self, _name: &str) -> CoreResult<()> {
         Ok(())
     }
 }
@@ -472,7 +610,9 @@ mod tests {
 
         // The node is not initialised, so it is not a leader.
         let result = node
-            .propose(RaftCommand::DeleteCollection { name: "x".into() })
+            .propose(RaftCommand::DeleteCollection {
+                name: "x".into(),
+            })
             .await;
 
         assert!(result.is_err());

@@ -642,6 +642,7 @@ fn start_workload(
                 let metrics = raft.metrics().borrow().clone();
                 if metrics.state == ServerState::Leader {
                     let cmd = RaftCommand::InsertDocument {
+                        collection: "test".into(),
                         document: doc.clone(),
                     };
                     match raft.client_write(cmd).await {
@@ -839,7 +840,7 @@ async fn threshold_single_node_failure_no_data_loss() {
     for i in 0..100 {
         let doc = make_doc(&format!("thresh1-{}", i), &format!("data-{}", i));
         let resp = leader
-            .propose(RaftCommand::InsertDocument { document: doc })
+            .propose(RaftCommand::InsertDocument { collection: "test".into(), document: doc })
             .await
             .expect("write failed");
         assert!(resp.success);
@@ -895,7 +896,7 @@ async fn threshold_two_node_failure_no_data_loss() {
     for i in 0..50 {
         let doc = make_doc(&format!("thresh2-{}", i), &format!("data-{}", i));
         let resp = leader
-            .propose(RaftCommand::InsertDocument { document: doc })
+            .propose(RaftCommand::InsertDocument { collection: "test".into(), document: doc })
             .await
             .expect("write failed");
         assert!(resp.success);
@@ -941,7 +942,7 @@ async fn threshold_all_three_fail_data_persists_in_storage() {
     // Write 200 documents via batch.
     let leader = cluster.node(leader_id);
     let docs = make_docs("thresh3", 200);
-    let resp = leader.propose_batch(docs).await.expect("batch failed");
+    let resp = leader.propose_batch("test", docs).await.expect("batch failed");
     assert!(resp.success);
     assert_eq!(resp.affected_count, 200);
 
@@ -958,6 +959,7 @@ async fn threshold_all_three_fail_data_persists_in_storage() {
     for node in &cluster.nodes {
         let result = tokio::time::timeout(Duration::from_secs(2), async {
             node.propose(RaftCommand::InsertDocument {
+                collection: "test".into(),
                 document: make_doc("should-fail", "dead"),
             })
             .await
@@ -998,7 +1000,7 @@ async fn threshold_sequential_failures_with_recovery() {
     for i in 0..20 {
         let doc = make_doc(&format!("seq-phase1-{}", i), "phase1");
         let resp = leader
-            .propose(RaftCommand::InsertDocument { document: doc })
+            .propose(RaftCommand::InsertDocument { collection: "test".into(), document: doc })
             .await
             .expect("phase1 write failed");
         assert!(resp.success);
@@ -1013,7 +1015,7 @@ async fn threshold_sequential_failures_with_recovery() {
     for i in 0..20 {
         let doc = make_doc(&format!("seq-phase2-{}", i), "phase2");
         let resp = leader
-            .propose(RaftCommand::InsertDocument { document: doc })
+            .propose(RaftCommand::InsertDocument { collection: "test".into(), document: doc })
             .await
             .expect("phase2 write failed (should succeed with 2/3 quorum)");
         assert!(resp.success);
@@ -1028,6 +1030,7 @@ async fn threshold_sequential_failures_with_recovery() {
     let result = tokio::time::timeout(Duration::from_secs(2), async {
         leader
             .propose(RaftCommand::InsertDocument {
+                collection: "test".into(),
                 document: make_doc("seq-noquorum", "fail"),
             })
             .await
@@ -1079,7 +1082,7 @@ async fn threshold_quorum_committed_data_survives() {
     for i in 0..30 {
         let doc = make_doc(&format!("quorum-{}", i), "quorum-data");
         let resp = leader
-            .propose(RaftCommand::InsertDocument { document: doc })
+            .propose(RaftCommand::InsertDocument { collection: "test".into(), document: doc })
             .await
             .expect("write failed with 2/3 quorum");
         assert!(resp.success);
@@ -1120,6 +1123,7 @@ async fn threshold_quorum_committed_data_survives() {
     let new_leader_node = cluster.node(new_leader);
     let resp = new_leader_node
         .propose(RaftCommand::InsertDocument {
+            collection: "test".into(),
             document: make_doc("post-recovery", "recovered"),
         })
         .await
@@ -1247,6 +1251,7 @@ async fn adv_repeated_partition_heal_cycles() {
         let leader = cluster.node(leader_id);
         let resp = leader
             .propose(RaftCommand::InsertDocument {
+                collection: "test".into(),
                 document: make_doc(
                     &format!("partition-cycle-{}", cycle),
                     &format!("cycle-{}", cycle),
@@ -1289,6 +1294,7 @@ async fn adv_cascading_delay_and_packet_loss() {
     for i in 0..5 {
         let resp = leader
             .propose(RaftCommand::InsertDocument {
+                collection: "test".into(),
                 document: make_doc(&format!("cascade-phase1-{}", i), "delayed"),
             })
             .await
@@ -1307,6 +1313,7 @@ async fn adv_cascading_delay_and_packet_loss() {
         let result = tokio::time::timeout(Duration::from_secs(5), async {
             leader
                 .propose(RaftCommand::InsertDocument {
+                    collection: "test".into(),
                     document: make_doc(&format!("cascade-phase2-{}", i), "degraded"),
                 })
                 .await
@@ -1334,6 +1341,7 @@ async fn adv_cascading_delay_and_packet_loss() {
         let _result = tokio::time::timeout(Duration::from_secs(5), async {
             leader
                 .propose(RaftCommand::InsertDocument {
+                    collection: "test".into(),
                     document: make_doc(&format!("cascade-phase3-{}", i), "heavy-chaos"),
                 })
                 .await
@@ -1350,6 +1358,7 @@ async fn adv_cascading_delay_and_packet_loss() {
     let result = propose_on_leader(
         &cluster,
         RaftCommand::InsertDocument {
+            collection: "test".into(),
             document: make_doc("cascade-recovery", "healed"),
         },
         Duration::from_secs(5),
@@ -1371,6 +1380,7 @@ async fn adv_asymmetric_route_blocks() {
     let leader = cluster.node(leader_id);
     let resp = leader
         .propose(RaftCommand::InsertDocument {
+            collection: "test".into(),
             document: make_doc("asym-baseline", "ok"),
         })
         .await
@@ -1386,6 +1396,7 @@ async fn adv_asymmetric_route_blocks() {
     let result = propose_on_leader(
         &cluster,
         RaftCommand::InsertDocument {
+            collection: "test".into(),
             document: make_doc("asym-during", "route-blocked"),
         },
         Duration::from_secs(5),
@@ -1406,6 +1417,7 @@ async fn adv_asymmetric_route_blocks() {
     let _result = propose_on_leader(
         &cluster,
         RaftCommand::InsertDocument {
+            collection: "test".into(),
             document: make_doc("asym-bidirectional", "both-blocked"),
         },
         Duration::from_secs(5),
@@ -1421,6 +1433,7 @@ async fn adv_asymmetric_route_blocks() {
     let result = propose_on_leader(
         &cluster,
         RaftCommand::InsertDocument {
+            collection: "test".into(),
             document: make_doc("asym-recovered", "healed"),
         },
         Duration::from_secs(5),
@@ -1446,6 +1459,7 @@ async fn adv_mixed_simultaneous_faults() {
     for i in 0..10 {
         let resp = leader
             .propose(RaftCommand::InsertDocument {
+                collection: "test".into(),
                 document: make_doc(&format!("mixed-pre-{}", i), "healthy"),
             })
             .await
@@ -1470,6 +1484,7 @@ async fn adv_mixed_simultaneous_faults() {
         let result = tokio::time::timeout(Duration::from_secs(3), async {
             leader
                 .propose(RaftCommand::InsertDocument {
+                    collection: "test".into(),
                     document: make_doc(&format!("mixed-during-{}", i), "chaotic"),
                 })
                 .await
@@ -1498,6 +1513,7 @@ async fn adv_mixed_simultaneous_faults() {
     let result = propose_on_leader(
         &cluster,
         RaftCommand::InsertDocument {
+            collection: "test".into(),
             document: make_doc("mixed-healed", "recovered"),
         },
         Duration::from_secs(5),
@@ -1680,6 +1696,7 @@ async fn verify_isolation_blocks_rpcs() {
     let leader = cluster.node(leader_id);
     let resp = leader
         .propose(RaftCommand::InsertDocument {
+            collection: "test".into(),
             document: make_doc("iso-test", "before"),
         })
         .await
@@ -1697,6 +1714,7 @@ async fn verify_isolation_blocks_rpcs() {
     let result = tokio::time::timeout(Duration::from_secs(3), async {
         leader
             .propose(RaftCommand::InsertDocument {
+                collection: "test".into(),
                 document: make_doc("iso-during", "should-fail"),
             })
             .await
@@ -1723,6 +1741,7 @@ async fn verify_isolation_blocks_rpcs() {
     let result = propose_on_leader(
         &cluster,
         RaftCommand::InsertDocument {
+            collection: "test".into(),
             document: make_doc("iso-after", "reconnected"),
         },
         Duration::from_secs(5),
@@ -1748,6 +1767,7 @@ async fn verify_delay_slows_rpcs() {
     for i in 0..5 {
         let resp = leader
             .propose(RaftCommand::InsertDocument {
+                collection: "test".into(),
                 document: make_doc(&format!("delay-baseline-{}", i), "fast"),
             })
             .await
@@ -1770,6 +1790,7 @@ async fn verify_delay_slows_rpcs() {
     for i in 0..5 {
         let resp = leader
             .propose(RaftCommand::InsertDocument {
+                collection: "test".into(),
                 document: make_doc(&format!("delay-slow-{}", i), "delayed"),
             })
             .await
@@ -1797,6 +1818,7 @@ async fn verify_delay_slows_rpcs() {
     for i in 0..5 {
         let resp = leader
             .propose(RaftCommand::InsertDocument {
+                collection: "test".into(),
                 document: make_doc(&format!("delay-both-{}", i), "both-delayed"),
             })
             .await
@@ -1843,6 +1865,7 @@ async fn verify_packet_drop_affects_reliability() {
         let result = tokio::time::timeout(Duration::from_secs(5), async {
             leader
                 .propose(RaftCommand::InsertDocument {
+                    collection: "test".into(),
                     document: make_doc(&format!("drop-test-{}", i), "lossy"),
                 })
                 .await
@@ -1871,6 +1894,7 @@ async fn verify_packet_drop_affects_reliability() {
     let result = propose_on_leader(
         &cluster,
         RaftCommand::InsertDocument {
+            collection: "test".into(),
             document: make_doc("drop-recovery", "healed"),
         },
         Duration::from_secs(5),

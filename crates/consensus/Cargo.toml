@@ -16,6 +16,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
 openraft = { workspace = true }
+rocksdb = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

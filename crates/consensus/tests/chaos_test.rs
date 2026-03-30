@@ -661,7 +661,7 @@ async fn chaos_01_single_follower_failure_write_succeeds() {
     for i in 0..10 {
         let doc = make_doc(&format!("chaos01-{}", i), "during-failure");
         let resp = leader
-            .propose(RaftCommand::InsertDocument { document: doc })
+            .propose(RaftCommand::InsertDocument { collection: "test".into(), document: doc })
             .await
             .expect("write should succeed with 2/3 nodes alive");
         assert!(resp.success, "write {} should succeed", i);
@@ -683,7 +683,7 @@ async fn chaos_02_leader_failure_new_leader_within_2s() {
     let leader = cluster.leader_node(original_leader);
     let doc = make_doc("pre-failover", "before");
     let resp = leader
-        .propose(RaftCommand::InsertDocument { document: doc })
+        .propose(RaftCommand::InsertDocument { collection: "test".into(), document: doc })
         .await
         .expect("pre-failover write failed");
     assert!(resp.success);
@@ -714,7 +714,7 @@ async fn chaos_02_leader_failure_new_leader_within_2s() {
     let new_leader = cluster.leader_node(new_leader_id);
     let doc = make_doc("post-failover", "after");
     let resp = new_leader
-        .propose(RaftCommand::InsertDocument { document: doc })
+        .propose(RaftCommand::InsertDocument { collection: "test".into(), document: doc })
         .await
         .expect("post-failover write failed");
     assert!(resp.success);
@@ -735,7 +735,7 @@ async fn chaos_03_two_follower_failures_no_quorum() {
     let leader = cluster.leader_node(leader_id);
     let doc = make_doc("before-chaos", "healthy");
     let resp = leader
-        .propose(RaftCommand::InsertDocument { document: doc })
+        .propose(RaftCommand::InsertDocument { collection: "test".into(), document: doc })
         .await
         .expect("pre-chaos write failed");
     assert!(resp.success);
@@ -751,6 +751,7 @@ async fn chaos_03_two_follower_failures_no_quorum() {
     let result = tokio::time::timeout(Duration::from_secs(3), async {
         leader
             .propose(RaftCommand::InsertDocument {
+                collection: "test".into(),
                 document: make_doc("should-fail", "no-quorum"),
             })
             .await
@@ -795,6 +796,7 @@ async fn chaos_04_network_partition_1v2() {
     let leader = cluster.leader_node(leader_id);
     let resp = leader
         .propose(RaftCommand::InsertDocument {
+            collection: "test".into(),
             document: make_doc("pre-partition", "ok"),
         })
         .await
@@ -818,6 +820,7 @@ async fn chaos_04_network_partition_1v2() {
     let new_leader = cluster.leader_node(new_leader_id);
     let resp = new_leader
         .propose(RaftCommand::InsertDocument {
+            collection: "test".into(),
             document: make_doc("majority-write", "partition-ok"),
         })
         .await
@@ -830,6 +833,7 @@ async fn chaos_04_network_partition_1v2() {
     let result = tokio::time::timeout(Duration::from_secs(2), async {
         old_leader
             .propose(RaftCommand::InsertDocument {
+                collection: "test".into(),
                 document: make_doc("minority-write", "should-fail"),
             })
             .await
@@ -907,7 +911,7 @@ async fn chaos_06_node_restart_data_persists() {
     for i in 0..20 {
         let doc = make_doc(&format!("persist-{}", i), &format!("data-{}", i));
         let resp = leader
-            .propose(RaftCommand::InsertDocument { document: doc })
+            .propose(RaftCommand::InsertDocument { collection: "test".into(), document: doc })
             .await
             .expect("write failed");
         assert!(resp.success);
@@ -990,7 +994,7 @@ async fn chaos_07_concurrent_writes_during_failover() {
         let id = format!("pre-{}", i);
         let doc = make_doc(&id, "pre-failover");
         let resp = leader
-            .propose(RaftCommand::InsertDocument { document: doc })
+            .propose(RaftCommand::InsertDocument { collection: "test".into(), document: doc })
             .await
             .expect("pre-failover write failed");
         assert!(resp.success);
@@ -1013,7 +1017,7 @@ async fn chaos_07_concurrent_writes_during_failover() {
         let id = format!("post-{}", i);
         let doc = make_doc(&id, "post-failover");
         let resp = new_leader
-            .propose(RaftCommand::InsertDocument { document: doc })
+            .propose(RaftCommand::InsertDocument { collection: "test".into(), document: doc })
             .await
             .expect("post-failover write failed");
         assert!(resp.success);
@@ -1099,7 +1103,7 @@ async fn chaos_08_slow_node_cluster_meets_sla() {
     for i in 0..20 {
         let doc = make_doc(&format!("sla-{}", i), "fast-path");
         let resp = leader
-            .propose(RaftCommand::InsertDocument { document: doc })
+            .propose(RaftCommand::InsertDocument { collection: "test".into(), document: doc })
             .await
             .expect("write should succeed with 2/3 quorum");
         assert!(resp.success);
@@ -1138,7 +1142,7 @@ async fn chaos_09_full_cluster_restart_data_present() {
     // Write a batch of documents.
     let leader = cluster.leader_node(leader_id);
     let docs = make_docs("restart", 50);
-    let resp = leader.propose_batch(docs).await.expect("batch failed");
+    let resp = leader.propose_batch("test", docs).await.expect("batch failed");
     assert!(resp.success);
     assert_eq!(resp.affected_count, 50);
 
@@ -1201,8 +1205,7 @@ async fn chaos_10_three_node_failure_rejects_writes() {
     // Write one document while healthy to prove the cluster works.
     let leader = cluster.leader_node(leader_id);
     let resp = leader
-        .propose(RaftCommand::InsertDocument {
-            document: make_doc("healthy-write", "ok"),
+        .propose(RaftCommand::InsertDocument { collection: "test".into(), document: make_doc("healthy-write", "ok"),
         })
         .await
         .expect("healthy write failed");
@@ -1217,8 +1220,7 @@ async fn chaos_10_three_node_failure_rejects_writes() {
     // Try to write on each node — all should fail.
     for node in &cluster.nodes {
         let result = tokio::time::timeout(Duration::from_secs(2), async {
-            node.propose(RaftCommand::InsertDocument {
-                document: make_doc("dead-write", "fail"),
+            node.propose(RaftCommand::InsertDocument { collection: "test".into(), document: make_doc("dead-write", "fail"),
             })
             .await
         })

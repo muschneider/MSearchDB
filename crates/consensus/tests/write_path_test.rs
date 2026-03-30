@@ -98,7 +98,7 @@ async fn write_path_single_document() {
         .with_field("title", FieldValue::Text("write-path test".into()))
         .with_field("price", FieldValue::Number(42.0));
 
-    let cmd = RaftCommand::InsertDocument { document: doc };
+    let cmd = RaftCommand::InsertDocument { collection: "test".into(), document: doc };
     let resp = leader.propose(cmd).await.expect("propose failed");
 
     assert!(resp.success);
@@ -125,7 +125,7 @@ async fn write_path_batch_100_documents() {
         .collect();
 
     let resp = leader
-        .propose_batch(docs)
+        .propose_batch("test", docs)
         .await
         .expect("batch propose failed");
 
@@ -153,7 +153,7 @@ async fn write_path_batch_1000_documents_10_batches() {
             .collect();
 
         let resp = leader
-            .propose_batch(docs)
+            .propose_batch("test", docs)
             .await
             .unwrap_or_else(|e| panic!("batch {} propose failed: {}", batch_idx, e));
 
@@ -184,13 +184,12 @@ async fn write_path_batch_then_delete() {
         })
         .collect();
 
-    let resp = leader.propose_batch(docs).await.expect("batch failed");
+    let resp = leader.propose_batch("test", docs).await.expect("batch failed");
     assert!(resp.success);
     assert_eq!(resp.affected_count, 5);
 
     // Delete one.
-    let del = RaftCommand::DeleteDocument {
-        id: DocumentId::new("del-test-2"),
+    let del = RaftCommand::DeleteDocument { collection: "test".into(), id: DocumentId::new("del-test-2"),
     };
     let resp = leader.propose(del).await.expect("delete failed");
     assert!(resp.success);
@@ -213,7 +212,7 @@ async fn write_path_mixed_operations() {
                 .with_field("phase", FieldValue::Text("batch".into()))
         })
         .collect();
-    let resp = leader.propose_batch(batch).await.expect("batch failed");
+    let resp = leader.propose_batch("test", batch).await.expect("batch failed");
     assert!(resp.success);
     assert_eq!(resp.affected_count, 50);
 
@@ -221,7 +220,7 @@ async fn write_path_mixed_operations() {
     let single = Document::new(DocumentId::new("mixed-single"))
         .with_field("phase", FieldValue::Text("single".into()));
     let resp = leader
-        .propose(RaftCommand::InsertDocument { document: single })
+        .propose(RaftCommand::InsertDocument { collection: "test".into(), document: single })
         .await
         .expect("single insert failed");
     assert!(resp.success);
@@ -230,15 +229,14 @@ async fn write_path_mixed_operations() {
     let updated = Document::new(DocumentId::new("mixed-0"))
         .with_field("phase", FieldValue::Text("updated".into()));
     let resp = leader
-        .propose(RaftCommand::UpdateDocument { document: updated })
+        .propose(RaftCommand::UpdateDocument { collection: "test".into(), document: updated })
         .await
         .expect("update failed");
     assert!(resp.success);
 
     // 4. Delete.
     let resp = leader
-        .propose(RaftCommand::DeleteDocument {
-            id: DocumentId::new("mixed-49"),
+        .propose(RaftCommand::DeleteDocument { collection: "test".into(), id: DocumentId::new("mixed-49"),
         })
         .await
         .expect("delete failed");
@@ -266,7 +264,7 @@ async fn write_path_survives_leader_failover() {
                 .with_field("tag", FieldValue::Text("pre-failover".into()))
         })
         .collect();
-    let resp = leader.propose_batch(docs).await.expect("batch failed");
+    let resp = leader.propose_batch("test", docs).await.expect("batch failed");
     assert!(resp.success);
     assert_eq!(resp.affected_count, 100);
 
@@ -307,7 +305,7 @@ async fn write_path_survives_leader_failover() {
     let post_doc = Document::new(DocumentId::new("post-failover-batch"))
         .with_field("tag", FieldValue::Text("post-failover".into()));
     let resp = new_leader
-        .propose(RaftCommand::InsertDocument { document: post_doc })
+        .propose(RaftCommand::InsertDocument { collection: "test".into(), document: post_doc })
         .await
         .expect("post-failover propose failed");
     assert!(resp.success);

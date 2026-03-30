@@ -557,8 +557,7 @@ async fn connection_pool_reacquire_returns_cached_client() {
 fn protobuf_write_request_roundtrip() {
     use msearchdb_consensus::types::RaftCommand;
 
-    let cmd = RaftCommand::InsertDocument {
-        document: Document::new(DocumentId::new("proto-doc"))
+    let cmd = RaftCommand::InsertDocument { collection: "test".into(), document: Document::new(DocumentId::new("proto-doc"))
             .with_field("title", FieldValue::Text("hello".into())),
     };
 

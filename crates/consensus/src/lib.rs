@@ -39,6 +39,7 @@ pub mod log_store;
 pub mod network;
 pub mod quorum;
 pub mod raft_node;
+pub mod rocksdb_log_store;
 pub mod state_machine;
 pub mod types;
 

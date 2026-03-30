@@ -135,7 +135,7 @@ async fn command_replication() {
     let doc = Document::new(DocumentId::new("test-doc-1"))
         .with_field("title", FieldValue::Text("hello raft".into()));
 
-    let cmd = RaftCommand::InsertDocument { document: doc };
+    let cmd = RaftCommand::InsertDocument { collection: "test".into(), document: doc };
 
     let resp = leader.propose(cmd).await.expect("propose failed");
     assert!(resp.success);
@@ -161,14 +161,13 @@ async fn multiple_commands_replication() {
         let doc = Document::new(DocumentId::new(format!("doc-{}", i)))
             .with_field("index", FieldValue::Number(i as f64));
 
-        let cmd = RaftCommand::InsertDocument { document: doc };
+        let cmd = RaftCommand::InsertDocument { collection: "test".into(), document: doc };
         let resp = leader.propose(cmd).await.expect("propose failed");
         assert!(resp.success, "document {} failed to replicate", i);
     }
 
     // Delete one.
-    let del = RaftCommand::DeleteDocument {
-        id: DocumentId::new("doc-2"),
+    let del = RaftCommand::DeleteDocument { collection: "test".into(), id: DocumentId::new("doc-2"),
     };
     let resp = leader.propose(del).await.expect("delete failed");
     assert!(resp.success);
@@ -176,7 +175,7 @@ async fn multiple_commands_replication() {
     // Update one.
     let updated =
         Document::new(DocumentId::new("doc-0")).with_field("index", FieldValue::Number(99.0));
-    let upd = RaftCommand::UpdateDocument { document: updated };
+    let upd = RaftCommand::UpdateDocument { collection: "test".into(), document: updated };
     let resp = leader.propose(upd).await.expect("update failed");
     assert!(resp.success);
 }
@@ -196,8 +195,7 @@ async fn propose_on_follower_returns_error() {
         .find(|n| n.node_id() != leader_id)
         .expect("no follower found");
 
-    let cmd = RaftCommand::InsertDocument {
-        document: Document::new(DocumentId::new("should-fail")),
+    let cmd = RaftCommand::InsertDocument { collection: "test".into(), document: Document::new(DocumentId::new("should-fail")),
     };
 
     let result = follower.propose(cmd).await;
@@ -231,7 +229,7 @@ async fn leader_failover() {
     let doc = Document::new(DocumentId::new("pre-failover"))
         .with_field("data", FieldValue::Text("before".into()));
     let resp = leader
-        .propose(RaftCommand::InsertDocument { document: doc })
+        .propose(RaftCommand::InsertDocument { collection: "test".into(), document: doc })
         .await
         .expect("pre-failover propose failed");
     assert!(resp.success);
@@ -284,7 +282,7 @@ async fn leader_failover() {
     let doc2 = Document::new(DocumentId::new("post-failover"))
         .with_field("data", FieldValue::Text("after".into()));
     let resp = new_leader
-        .propose(RaftCommand::InsertDocument { document: doc2 })
+        .propose(RaftCommand::InsertDocument { collection: "test".into(), document: doc2 })
         .await
         .expect("post-failover propose failed");
     assert!(resp.success);

@@ -175,25 +175,34 @@ async fn flush_batch(raft_node: &Arc<RaftNode>, buffer: &mut Vec<BatchEntry>) {
 
     let entries: Vec<BatchEntry> = std::mem::take(buffer);
 
-    // Group by collection for potential per-collection batching.
-    // For simplicity, submit all documents as a single BatchInsert regardless
-    // of collection — the state machine and handlers handle collection routing.
-    let documents: Vec<Document> = entries.iter().map(|e| e.document.clone()).collect();
+    // Group entries by collection for per-collection batch proposals.
+    let mut by_collection: std::collections::HashMap<String, Vec<BatchEntry>> =
+        std::collections::HashMap::new();
+    for entry in entries {
+        by_collection
+            .entry(entry.collection.clone())
+            .or_default()
+            .push(entry);
+    }
 
-    let result = raft_node.propose_batch(documents).await;
+    for (collection, batch_entries) in by_collection {
+        let documents: Vec<Document> = batch_entries.iter().map(|e| e.document.clone()).collect();
 
-    match result {
-        Ok(resp) => {
-            for entry in entries {
-                let _ = entry.reply.send(Ok(resp.clone()));
+        let result = raft_node.propose_batch(&collection, documents).await;
+
+        match result {
+            Ok(resp) => {
+                for entry in batch_entries {
+                    let _ = entry.reply.send(Ok(resp.clone()));
+                }
             }
-        }
-        Err(e) => {
-            let err_str = e.to_string();
-            for entry in entries {
-                let _ = entry
-                    .reply
-                    .send(Err(DbError::ConsensusError(err_str.clone())));
+            Err(e) => {
+                let err_str = e.to_string();
+                for entry in batch_entries {
+                    let _ = entry
+                        .reply
+                        .send(Err(DbError::ConsensusError(err_str.clone())));
+                }
             }
         }
     }

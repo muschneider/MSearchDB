@@ -1928,6 +1928,7 @@ dependencies = [
  "msearchdb-storage",
  "openraft",
  "rand",
+ "rocksdb",
  "serde",
  "serde_json",
  "tempfile",
