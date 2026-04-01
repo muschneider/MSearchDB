@@ -255,13 +255,13 @@ async fn main() {
         status: NodeStatus::Follower,
     };
     let initial_nodes = vec![local_node.clone()];
-    let router = Arc::new(RwLock::new(ClusterRouter::new(
+    let cluster_router = Arc::new(RwLock::new(ClusterRouter::new(
         initial_nodes,
         config.replication_factor,
     )));
     let cluster_manager = Arc::new(ClusterManager::new(
         local_node,
-        router,
+        cluster_router.clone(),
         connection_pool.clone(),
         raft_node.clone(),
         storage.clone(),
@@ -421,6 +421,8 @@ async fn main() {
         document_cache,
         session_manager,
         write_batcher,
+        cluster_router,
+        cluster_manager: cluster_manager.clone(),
     };
 
     let app = msearchdb_node::build_router(state);

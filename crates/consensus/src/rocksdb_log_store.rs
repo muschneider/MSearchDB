@@ -26,9 +26,10 @@ use tokio::sync::RwLock;
 
 use crate::types::TypeConfig;
 
-/// Create an `io::Error` from a message string (for `StorageIOError` sources).
+/// Create an [`io::Error`] from a message string for use as a
+/// [`StorageIOError`] source.
 fn io_err(msg: impl Into<String>) -> io::Error {
-    io::Error::new(io::ErrorKind::Other, msg.into())
+    io::Error::other(msg.into())
 }
 
 // ---------------------------------------------------------------------------
@@ -70,16 +71,20 @@ impl Debug for RocksDbLogStore {
     }
 }
 
+#[allow(clippy::result_large_err)]
 impl RocksDbLogStore {
     /// Open (or create) a RocksDB instance at the given path.
     pub fn new(path: impl AsRef<Path>) -> Result<Self, StorageError<u64>> {
         let mut opts = rocksdb::Options::default();
         opts.create_if_missing(true);
-        opts.set_write_buffer_size(4 * 1024 * 1024); // 4 MB — small; this DB is append-mostly
+        opts.set_write_buffer_size(4 * 1024 * 1024); // 4 MB
         opts.set_max_write_buffer_number(2);
 
         let db = rocksdb::DB::open(&opts, path.as_ref()).map_err(|e| {
-            StorageIOError::write_logs(&io_err(format!("failed to open raft-log RocksDB: {}", e))
+            StorageIOError::write_logs(&io_err(format!(
+                "failed to open raft-log RocksDB: {}",
+                e
+            )))
         })?;
 
         Ok(Self {
@@ -92,6 +97,7 @@ impl RocksDbLogStore {
 // RaftLogReader
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::result_large_err)]
 impl RaftLogReader<TypeConfig> for RocksDbLogStore {
     async fn try_get_log_entries<RB: RangeBounds<u64> + Clone + Debug + OptionalSend>(
         &mut self,
@@ -120,7 +126,7 @@ impl RaftLogReader<TypeConfig> for RocksDbLogStore {
         let mut entries = Vec::new();
         for item in iter {
             let (key, value) = item.map_err(|e| {
-                StorageIOError::read_logs(&io_err(format!("RocksDB iterator error: {}", e))
+                StorageIOError::read_logs(&io_err(format!("RocksDB iterator error: {}", e)))
             })?;
 
             if let Some(idx) = parse_log_key(&key) {
@@ -132,15 +138,15 @@ impl RaftLogReader<TypeConfig> for RocksDbLogStore {
                 if idx < start {
                     continue;
                 }
-                let entry: Entry<TypeConfig> = serde_json::from_slice(&value).map_err(|e| {
-                    StorageIOError::read_logs(&io_err(format!(
-                        "failed to deserialize log entry {}: {}",
-                        idx, e
-                    ))
-                })?;
+                let entry: Entry<TypeConfig> =
+                    serde_json::from_slice(&value).map_err(|e| {
+                        StorageIOError::read_logs(&io_err(format!(
+                            "failed to deserialize log entry {}: {}",
+                            idx, e
+                        )))
+                    })?;
                 entries.push(entry);
             } else {
-                // Not a log key — we've moved past the log key range.
                 break;
             }
         }
@@ -153,29 +159,28 @@ impl RaftLogReader<TypeConfig> for RocksDbLogStore {
 // RaftLogStorage
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::result_large_err)]
 impl RaftLogStorage<TypeConfig> for RocksDbLogStore {
     type LogReader = RocksDbLogStore;
 
     async fn get_log_state(&mut self) -> Result<LogState<TypeConfig>, StorageError<u64>> {
         let db = self.db.read().await;
 
-        // Read last purged.
         let last_purged: Option<LogId<u64>> = db
             .get(LAST_PURGED_KEY)
             .map_err(|e| {
-                StorageIOError::read_logs(&io_err(format!("failed to read last_purged: {}", e))
+                StorageIOError::read_logs(&io_err(format!("failed to read last_purged: {}", e)))
             })?
             .map(|v| {
                 serde_json::from_slice(&v).map_err(|e| {
                     StorageIOError::read_logs(&io_err(format!(
                         "failed to deserialize last_purged: {}",
                         e
-                    ))
+                    )))
                 })
             })
             .transpose()?;
 
-        // Find the last log entry by reverse iteration.
         let last_log_id = {
             let mut iter = db.iterator(rocksdb::IteratorMode::End);
             let mut found = None;
@@ -186,7 +191,7 @@ impl RaftLogStorage<TypeConfig> for RocksDbLogStore {
                             StorageIOError::read_logs(&io_err(format!(
                                 "failed to deserialize last log entry: {}",
                                 e
-                            ))
+                            )))
                         })?;
                     found = Some(entry.log_id);
                     break;
@@ -210,10 +215,10 @@ impl RaftLogStorage<TypeConfig> for RocksDbLogStore {
     async fn save_vote(&mut self, vote: &Vote<u64>) -> Result<(), StorageError<u64>> {
         let db = self.db.write().await;
         let value = serde_json::to_vec(vote).map_err(|e| {
-            StorageIOError::write_vote(&io_err(format!("failed to serialize vote: {}", e))
+            StorageIOError::write_vote(&io_err(format!("failed to serialize vote: {}", e)))
         })?;
         db.put(VOTE_KEY, value).map_err(|e| {
-            StorageIOError::write_vote(&io_err(format!("failed to write vote: {}", e))
+            StorageIOError::write_vote(&io_err(format!("failed to write vote: {}", e)))
         })?;
         Ok(())
     }
@@ -221,11 +226,14 @@ impl RaftLogStorage<TypeConfig> for RocksDbLogStore {
     async fn read_vote(&mut self) -> Result<Option<Vote<u64>>, StorageError<u64>> {
         let db = self.db.read().await;
         match db.get(VOTE_KEY).map_err(|e| {
-            StorageIOError::read_vote(&io_err(format!("failed to read vote: {}", e))
+            StorageIOError::read_vote(&io_err(format!("failed to read vote: {}", e)))
         })? {
             Some(v) => {
                 let vote: Vote<u64> = serde_json::from_slice(&v).map_err(|e| {
-                    StorageIOError::read_vote(&io_err(format!("failed to deserialize vote: {}", e))
+                    StorageIOError::read_vote(&io_err(format!(
+                        "failed to deserialize vote: {}",
+                        e
+                    )))
                 })?;
                 Ok(Some(vote))
             }
@@ -248,16 +256,18 @@ impl RaftLogStorage<TypeConfig> for RocksDbLogStore {
         for entry in entries {
             let key = log_key(entry.log_id.index);
             let value = serde_json::to_vec(&entry).map_err(|e| {
-                StorageIOError::write_logs(&io_err(format!("failed to serialize log entry: {}", e))
+                StorageIOError::write_logs(&io_err(format!(
+                    "failed to serialize log entry: {}",
+                    e
+                )))
             })?;
             batch.put(key, value);
         }
 
         db.write(batch).map_err(|e| {
-            StorageIOError::write_logs(&io_err(format!("failed to write log batch: {}", e))
+            StorageIOError::write_logs(&io_err(format!("failed to write log batch: {}", e)))
         })?;
 
-        // Signal that the write is durable (RocksDB WAL guarantees this).
         callback.log_io_completed(Ok(()));
         Ok(())
     }
@@ -265,7 +275,6 @@ impl RaftLogStorage<TypeConfig> for RocksDbLogStore {
     async fn truncate(&mut self, log_id: LogId<u64>) -> Result<(), StorageError<u64>> {
         let db = self.db.write().await;
 
-        // Delete all entries with index >= log_id.index.
         let start_key = log_key(log_id.index);
         let end_key = log_key(u64::MAX);
         let mut batch = rocksdb::WriteBatch::default();
@@ -277,7 +286,10 @@ impl RaftLogStorage<TypeConfig> for RocksDbLogStore {
 
         for item in iter {
             let (key, _) = item.map_err(|e| {
-                StorageIOError::write_logs(&io_err(format!("iterator error during truncate: {}", e))
+                StorageIOError::write_logs(&io_err(format!(
+                    "iterator error during truncate: {}",
+                    e
+                )))
             })?;
             if key.as_ref() > end_key.as_slice() {
                 break;
@@ -290,7 +302,7 @@ impl RaftLogStorage<TypeConfig> for RocksDbLogStore {
         }
 
         db.write(batch).map_err(|e| {
-            StorageIOError::write_logs(&io_err(format!("failed to truncate logs: {}", e))
+            StorageIOError::write_logs(&io_err(format!("failed to truncate logs: {}", e)))
         })?;
 
         Ok(())
@@ -299,7 +311,6 @@ impl RaftLogStorage<TypeConfig> for RocksDbLogStore {
     async fn purge(&mut self, log_id: LogId<u64>) -> Result<(), StorageError<u64>> {
         let db = self.db.write().await;
 
-        // Delete all entries with index <= log_id.index.
         let start_key = log_key(0);
         let end_key = log_key(log_id.index);
         let mut batch = rocksdb::WriteBatch::default();
@@ -311,7 +322,10 @@ impl RaftLogStorage<TypeConfig> for RocksDbLogStore {
 
         for item in iter {
             let (key, _) = item.map_err(|e| {
-                StorageIOError::write_logs(&io_err(format!("iterator error during purge: {}", e))
+                StorageIOError::write_logs(&io_err(format!(
+                    "iterator error during purge: {}",
+                    e
+                )))
             })?;
             if key.as_ref() > end_key.as_slice() {
                 break;
@@ -323,14 +337,16 @@ impl RaftLogStorage<TypeConfig> for RocksDbLogStore {
             }
         }
 
-        // Persist the last purged marker.
         let purged_value = serde_json::to_vec(&log_id).map_err(|e| {
-            StorageIOError::write_logs(&io_err(format!("failed to serialize last_purged: {}", e))
+            StorageIOError::write_logs(&io_err(format!(
+                "failed to serialize last_purged: {}",
+                e
+            )))
         })?;
         batch.put(LAST_PURGED_KEY, purged_value);
 
         db.write(batch).map_err(|e| {
-            StorageIOError::write_logs(&io_err(format!("failed to purge logs: {}", e))
+            StorageIOError::write_logs(&io_err(format!("failed to purge logs: {}", e)))
         })?;
 
         Ok(())
@@ -347,10 +363,13 @@ impl RaftLogStorage<TypeConfig> for RocksDbLogStore {
                     StorageIOError::write_logs(&io_err(format!(
                         "failed to serialize committed: {}",
                         e
-                    ))
+                    )))
                 })?;
                 db.put(COMMITTED_KEY, value).map_err(|e| {
-                    StorageIOError::write_logs(&io_err(format!("failed to write committed: {}", e))
+                    StorageIOError::write_logs(&io_err(format!(
+                        "failed to write committed: {}",
+                        e
+                    )))
                 })?;
             }
             None => {
@@ -363,14 +382,14 @@ impl RaftLogStorage<TypeConfig> for RocksDbLogStore {
     async fn read_committed(&mut self) -> Result<Option<LogId<u64>>, StorageError<u64>> {
         let db = self.db.read().await;
         match db.get(COMMITTED_KEY).map_err(|e| {
-            StorageIOError::read_logs(&io_err(format!("failed to read committed: {}", e))
+            StorageIOError::read_logs(&io_err(format!("failed to read committed: {}", e)))
         })? {
             Some(v) => {
                 let log_id: LogId<u64> = serde_json::from_slice(&v).map_err(|e| {
                     StorageIOError::read_logs(&io_err(format!(
                         "failed to deserialize committed: {}",
                         e
-                    ))
+                    )))
                 })?;
                 Ok(Some(log_id))
             }
@@ -400,6 +419,16 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = RocksDbLogStore::new(dir.path()).unwrap();
         (store, dir)
+    }
+
+    /// Helper: directly insert entries into the RocksDB store.
+    async fn insert_entries(store: &RocksDbLogStore, entries: Vec<Entry<TypeConfig>>) {
+        let db = store.db.write().await;
+        for entry in &entries {
+            let key = log_key(entry.log_id.index);
+            let value = serde_json::to_vec(entry).unwrap();
+            db.put(key, value).unwrap();
+        }
     }
 
     #[tokio::test]
@@ -438,16 +467,7 @@ mod tests {
     async fn append_and_read_entries() {
         let (mut store, _dir) = make_store();
         let entries = vec![make_entry(1, 1), make_entry(2, 1), make_entry(3, 1)];
-
-        // We can't construct LogFlushed externally, so test via the DB directly.
-        {
-            let db = store.db.write().await;
-            for entry in &entries {
-                let key = log_key(entry.log_id.index);
-                let value = serde_json::to_vec(entry).unwrap();
-                db.put(key, value).unwrap();
-            }
-        }
+        insert_entries(&store, entries).await;
 
         let read = store.try_get_log_entries(1_u64..4_u64).await.unwrap();
         assert_eq!(read.len(), 3);
@@ -458,16 +478,7 @@ mod tests {
     #[tokio::test]
     async fn log_state_after_insert() {
         let (mut store, _dir) = make_store();
-
-        // Insert directly.
-        {
-            let db = store.db.write().await;
-            for entry in &[make_entry(1, 1), make_entry(2, 1)] {
-                let key = log_key(entry.log_id.index);
-                let value = serde_json::to_vec(entry).unwrap();
-                db.put(key, value).unwrap();
-            }
-        }
+        insert_entries(&store, vec![make_entry(1, 1), make_entry(2, 1)]).await;
 
         let state = store.get_log_state().await.unwrap();
         assert!(state.last_purged_log_id.is_none());
@@ -478,15 +489,11 @@ mod tests {
     #[tokio::test]
     async fn purge_removes_up_to_index() {
         let (mut store, _dir) = make_store();
-
-        {
-            let db = store.db.write().await;
-            for entry in &[make_entry(1, 1), make_entry(2, 1), make_entry(3, 1)] {
-                let key = log_key(entry.log_id.index);
-                let value = serde_json::to_vec(entry).unwrap();
-                db.put(key, value).unwrap();
-            }
-        }
+        insert_entries(
+            &store,
+            vec![make_entry(1, 1), make_entry(2, 1), make_entry(3, 1)],
+        )
+        .await;
 
         let purge_id = LogId::new(openraft::CommittedLeaderId::new(1, 1), 2);
         store.purge(purge_id).await.unwrap();
@@ -502,15 +509,11 @@ mod tests {
     #[tokio::test]
     async fn truncate_removes_from_index() {
         let (mut store, _dir) = make_store();
-
-        {
-            let db = store.db.write().await;
-            for entry in &[make_entry(1, 1), make_entry(2, 1), make_entry(3, 1)] {
-                let key = log_key(entry.log_id.index);
-                let value = serde_json::to_vec(entry).unwrap();
-                db.put(key, value).unwrap();
-            }
-        }
+        insert_entries(
+            &store,
+            vec![make_entry(1, 1), make_entry(2, 1), make_entry(3, 1)],
+        )
+        .await;
 
         store
             .truncate(LogId::new(openraft::CommittedLeaderId::new(1, 1), 2))

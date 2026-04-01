@@ -25,6 +25,7 @@ use tokio::sync::RwLock;
 
 use msearchdb_consensus::raft_node::RaftNode;
 use msearchdb_core::cluster::NodeId;
+use msearchdb_core::cluster_router::ClusterRouter;
 use msearchdb_core::collection::{CollectionAlias, CollectionSettings};
 use msearchdb_core::read_coordinator::ReadCoordinator;
 use msearchdb_core::security::{
@@ -33,6 +34,8 @@ use msearchdb_core::security::{
 };
 use msearchdb_core::traits::{IndexBackend, StorageBackend};
 use msearchdb_network::connection_pool::ConnectionPool;
+
+use crate::cluster_manager::ClusterManager;
 
 use crate::cache::DocumentCache;
 use crate::metrics::Metrics;
@@ -128,6 +131,15 @@ pub struct AppState {
     /// Buffers up to 100 documents or 10ms before flushing as a single
     /// Raft BatchInsert entry.
     pub write_batcher: Arc<WriteBatcher>,
+
+    /// Cluster router for document placement via consistent hashing.
+    ///
+    /// Determines which nodes hold a given document's replicas and which
+    /// nodes to query for scatter-gather searches.
+    pub cluster_router: Arc<RwLock<ClusterRouter>>,
+
+    /// Cluster manager for node health, gossip, and failure detection.
+    pub cluster_manager: Arc<ClusterManager>,
 }
 
 /// Metadata for a single collection.
