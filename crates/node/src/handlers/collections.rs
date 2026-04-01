@@ -64,7 +64,7 @@ pub async fn create_collection(
         schema,
     };
 
-    match state.raft_node.propose(cmd).await {
+    match super::propose_or_forward(&state.raft_node, &state.connection_pool, cmd).await {
         Ok(_resp) => {
             // The Raft state machine handles storage CF and index creation.
 
@@ -123,7 +123,7 @@ pub async fn delete_collection(
 
     let cmd = RaftCommand::DeleteCollection { name: name.clone() };
 
-    match state.raft_node.propose(cmd).await {
+    match super::propose_or_forward(&state.raft_node, &state.connection_pool, cmd).await {
         Ok(_) => {
             // The Raft state machine handles storage CF and index deletion.
 

@@ -117,7 +117,7 @@ pub async fn index_document(
         document: doc.clone(),
     };
 
-    match state.raft_node.propose(cmd).await {
+    match super::propose_or_forward(&state.raft_node, &state.connection_pool, cmd).await {
         Ok(_resp) => {
             // The Raft state machine handles storage and index writes.
             // We only need to update local metadata here.
@@ -165,6 +165,11 @@ pub async fn index_document(
             )
                 .into_response()
         }
+        Err(DbError::NetworkError(msg)) if msg.contains("no leader") => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::to_value(ErrorResponse::internal("no leader available")).unwrap()),
+        )
+            .into_response(),
         Err(e) => {
             let (status, resp) = db_error_to_response(e);
             (status, Json(serde_json::to_value(resp).unwrap())).into_response()
@@ -208,7 +213,7 @@ pub async fn upsert_document(
         document: doc.clone(),
     };
 
-    match state.raft_node.propose(cmd).await {
+    match super::propose_or_forward(&state.raft_node, &state.connection_pool, cmd).await {
         Ok(_resp) => {
             // The Raft state machine handles storage and index writes.
 
@@ -241,6 +246,11 @@ pub async fn upsert_document(
             )
                 .into_response()
         }
+        Err(DbError::NetworkError(msg)) if msg.contains("no leader") => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::to_value(ErrorResponse::internal("no leader available")).unwrap()),
+        )
+            .into_response(),
         Err(e) => {
             let (status, resp) = db_error_to_response(e);
             (status, Json(serde_json::to_value(resp).unwrap())).into_response()
@@ -430,7 +440,7 @@ pub async fn delete_document(
         id: doc_id.clone(),
     };
 
-    match state.raft_node.propose(cmd).await {
+    match super::propose_or_forward(&state.raft_node, &state.connection_pool, cmd).await {
         Ok(_) => {
             // The Raft state machine handles storage and index writes.
 
@@ -465,6 +475,11 @@ pub async fn delete_document(
             resp_headers.insert(SESSION_TOKEN_HEADER, token.encode().parse().unwrap());
             (StatusCode::OK, resp_headers, Json(body)).into_response()
         }
+        Err(DbError::NetworkError(msg)) if msg.contains("no leader") => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::to_value(ErrorResponse::internal("no leader available")).unwrap()),
+        )
+            .into_response(),
         Err(e) => {
             let (status, resp) = db_error_to_response(e);
             (status, Json(serde_json::to_value(resp).unwrap())).into_response()

@@ -826,15 +826,49 @@ impl ClusterManager {
                 (message, targets)
             };
 
+            // Serialize the gossip message for gRPC transport.
+            let gossip_bytes = serde_json::to_vec(&message).unwrap_or_default();
+            let sender_id = self.local_node.id.as_u64();
+
             for target_id in targets {
-                // In a full implementation, we would send the gossip message
-                // via gRPC or UDP. For now, this is a best-effort send.
-                let _message_clone = message.clone();
-                tracing::trace!(
-                    target = %target_id,
-                    entries = _message_clone.cluster_view.len(),
-                    "gossip sent"
-                );
+                // Look up the target's address from the cluster router.
+                let target_addr = {
+                    let router = self.router.read().await;
+                    router.get_node(target_id).map(|n| n.address.clone())
+                };
+
+                if let Some(addr) = target_addr {
+                    let pool = self.connection_pool.clone();
+                    let bytes = gossip_bytes.clone();
+                    // Best-effort send — do not block the gossip loop on failures.
+                    tokio::spawn(async move {
+                        match pool.get(&target_id, &addr).await {
+                            Ok(client) => {
+                                if let Err(e) =
+                                    client.gossip_exchange(sender_id, bytes).await
+                                {
+                                    tracing::trace!(
+                                        target = %target_id,
+                                        error = %e,
+                                        "gossip send failed"
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                tracing::trace!(
+                                    target = %target_id,
+                                    error = %e,
+                                    "gossip: no connection to target"
+                                );
+                            }
+                        }
+                    });
+                } else {
+                    tracing::trace!(
+                        target = %target_id,
+                        "gossip: no address known for target"
+                    );
+                }
             }
         }
     }

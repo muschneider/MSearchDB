@@ -30,13 +30,16 @@ pub async fn cluster_health(State(state): State<AppState>) -> impl IntoResponse 
     let leader_id = state.raft_node.current_leader();
     let commit_index = state.metrics.raft_commit_index.get();
 
-    // Count active nodes from node health metrics.
-    // For now, single-node mode is always 1 active out of 1 total.
-    let number_of_nodes: u64 = 1;
-    let active_nodes: u64 = 1;
+    // Count active nodes from the cluster manager's health state.
+    let health_snapshot = state.cluster_manager.health_snapshot();
+    let number_of_nodes = health_snapshot.len().max(1) as u64;
+    let active_nodes = health_snapshot
+        .iter()
+        .filter(|h| h.status == NodeStatus::Leader || h.status == NodeStatus::Follower)
+        .count()
+        .max(1) as u64;
 
     // Build replication lag map from metrics.
-    // In single-node mode there is no lag to report.
     let replication_lag = HashMap::new();
 
     // Build per-collection health information from the in-memory registry.
@@ -48,7 +51,7 @@ pub async fn cluster_health(State(state): State<AppState>) -> impl IntoResponse 
                     name.clone(),
                     CollectionHealthInfo {
                         docs: meta.doc_count,
-                        size_bytes: 0, // TODO: estimate from storage
+                        size_bytes: 0,
                     },
                 )
             })
@@ -86,21 +89,31 @@ pub async fn cluster_health(State(state): State<AppState>) -> impl IntoResponse 
 
 /// Return the full cluster state including all nodes and their statuses.
 pub async fn cluster_state(State(state): State<AppState>) -> impl IntoResponse {
-    let node_id = state.raft_node.node_id();
-    let is_leader = state.raft_node.is_leader();
+    // Read the actual cluster topology from the cluster router.
+    let router = state.cluster_router.read().await;
+    let nodes: Vec<NodeInfo> = router.healthy_nodes().into_iter().cloned().collect();
+    drop(router);
 
-    let node_status = if is_leader {
-        NodeStatus::Leader
-    } else {
-        NodeStatus::Follower
-    };
-
-    let cluster = ClusterState {
-        nodes: vec![NodeInfo {
+    // If no nodes are tracked yet, fall back to the local node.
+    let nodes = if nodes.is_empty() {
+        let node_id = state.raft_node.node_id();
+        let is_leader = state.raft_node.is_leader();
+        let node_status = if is_leader {
+            NodeStatus::Leader
+        } else {
+            NodeStatus::Follower
+        };
+        vec![NodeInfo {
             id: NodeId::new(node_id),
             address: NodeAddress::new("127.0.0.1", 9200),
             status: node_status,
-        }],
+        }]
+    } else {
+        nodes
+    };
+
+    let cluster = ClusterState {
+        nodes,
         leader: state.raft_node.current_leader().map(NodeId::new),
     };
 
@@ -113,20 +126,39 @@ pub async fn cluster_state(State(state): State<AppState>) -> impl IntoResponse {
 
 /// List all known nodes in the cluster.
 pub async fn list_nodes(State(state): State<AppState>) -> impl IntoResponse {
-    let node_id = state.raft_node.node_id();
-    let is_leader = state.raft_node.is_leader();
+    // Build the node list from the cluster manager's health snapshot,
+    // enriched with health status from the failure detector.
+    let health_snapshot = state.cluster_manager.health_snapshot();
 
-    let status = if is_leader {
-        NodeStatus::Leader
+    let nodes: Vec<serde_json::Value> = if health_snapshot.is_empty() {
+        // Fallback: report this node only.
+        let node_id = state.raft_node.node_id();
+        let is_leader = state.raft_node.is_leader();
+        let status = if is_leader {
+            NodeStatus::Leader
+        } else {
+            NodeStatus::Follower
+        };
+        vec![serde_json::to_value(NodeInfo {
+            id: NodeId::new(node_id),
+            address: NodeAddress::new("127.0.0.1", 9200),
+            status,
+        })
+        .unwrap()]
     } else {
-        NodeStatus::Follower
+        health_snapshot
+            .iter()
+            .map(|h| {
+                serde_json::json!({
+                    "id": h.node_id.as_u64(),
+                    "status": format!("{}", h.status),
+                    "last_seen_ms_ago": h.last_seen.elapsed().as_millis() as u64,
+                    "consecutive_failures": h.consecutive_failures,
+                    "latency_ms": h.latency_ms,
+                })
+            })
+            .collect()
     };
-
-    let nodes = vec![NodeInfo {
-        id: NodeId::new(node_id),
-        address: NodeAddress::new("127.0.0.1", 9200),
-        status,
-    }];
 
     Json(serde_json::to_value(nodes).unwrap())
 }

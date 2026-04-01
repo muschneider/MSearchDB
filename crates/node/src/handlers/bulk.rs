@@ -186,7 +186,7 @@ pub async fn bulk_index(
 
     // Execute pending deletes individually — storage/index handled by state machine.
     for (cmd, id) in pending_deletes {
-        match state.raft_node.propose(cmd).await {
+        match super::propose_or_forward(&state.raft_node, &state.connection_pool, cmd).await {
             Ok(_) => {
                 items.push(BulkItem {
                     action: "delete".into(),
@@ -246,7 +246,7 @@ async fn flush_insert_batch(
         documents,
     };
 
-    match state.raft_node.propose(cmd).await {
+    match super::propose_or_forward(&state.raft_node, &state.connection_pool, cmd).await {
         Ok(resp) => {
             let count = resp.affected_count;
             let mut items: Vec<BulkItem> = Vec::with_capacity(batch_len);

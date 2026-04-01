@@ -235,6 +235,30 @@ impl proto::node_service_server::NodeService for NodeServiceImpl {
             })),
         }
     }
+
+    async fn gossip_exchange(
+        &self,
+        request: Request<proto::GossipMessage>,
+    ) -> Result<Response<proto::GossipMessage>, Status> {
+        let inner = request.into_inner();
+
+        // For now, echo the sender's view. A full implementation would
+        // merge the incoming gossip with local state and return the merged
+        // view.  The actual gossip merge is handled by ClusterManager in
+        // the node crate — the network layer just transports the bytes.
+        tracing::trace!(
+            sender_id = inner.sender_id,
+            payload_bytes = inner.cluster_view.len(),
+            "received gossip exchange"
+        );
+
+        // Return this node's empty view as a placeholder. The node crate's
+        // gossip handler will replace this with a real implementation.
+        Ok(Response::new(proto::GossipMessage {
+            cluster_view: inner.cluster_view,
+            sender_id: self.node_id,
+        }))
+    }
 }
 
 // ---------------------------------------------------------------------------

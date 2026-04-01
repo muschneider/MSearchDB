@@ -660,6 +660,7 @@ mod tests {
         }
 
         let storage: Arc<dyn StorageBackend> = Arc::new(MockStorage);
+        let cm_storage = storage.clone();
         let index: Arc<dyn IndexBackend> = Arc::new(MockIndex);
 
         let config = msearchdb_core::config::NodeConfig::default();
@@ -693,7 +694,24 @@ mod tests {
             snapshot_manager: None,
             document_cache: Arc::new(crate::cache::DocumentCache::with_defaults()),
             session_manager: Arc::new(crate::session::SessionManager::new()),
-            write_batcher: Arc::new(crate::write_batcher::WriteBatcher::new(raft_node)),
+            write_batcher: Arc::new(crate::write_batcher::WriteBatcher::new(raft_node.clone())),
+            cluster_router: Arc::new(RwLock::new(
+                msearchdb_core::cluster_router::ClusterRouter::new(vec![], 1),
+            )),
+            cluster_manager: Arc::new(crate::cluster_manager::ClusterManager::new(
+                msearchdb_core::cluster::NodeInfo {
+                    id: config.node_id,
+                    address: msearchdb_core::cluster::NodeAddress::new("127.0.0.1", 9300),
+                    status: msearchdb_core::cluster::NodeStatus::Follower,
+                },
+                Arc::new(RwLock::new(
+                    msearchdb_core::cluster_router::ClusterRouter::new(vec![], 1),
+                )),
+                Arc::new(ConnectionPool::new()),
+                raft_node,
+                cm_storage,
+                1,
+            )),
         }
     }
 

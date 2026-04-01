@@ -23,6 +23,8 @@ use tokio::sync::RwLock;
 use tower::ServiceExt;
 
 use msearchdb_consensus::raft_node::RaftNode;
+use msearchdb_core::cluster::{NodeAddress, NodeId, NodeInfo, NodeStatus};
+use msearchdb_core::cluster_router::ClusterRouter;
 use msearchdb_core::config::NodeConfig;
 use msearchdb_core::document::{Document, DocumentId};
 use msearchdb_core::error::{DbError, DbResult};
@@ -33,6 +35,7 @@ use msearchdb_core::security::{
 };
 use msearchdb_core::traits::{IndexBackend, StorageBackend};
 use msearchdb_network::connection_pool::ConnectionPool;
+use msearchdb_node::cluster_manager::ClusterManager;
 use msearchdb_node::state::AppState;
 
 // ---------------------------------------------------------------------------
@@ -118,6 +121,7 @@ impl Default for SecurityTestOpts {
 async fn make_security_state(opts: SecurityTestOpts) -> AppState {
     let config = NodeConfig::default();
     let storage: Arc<dyn StorageBackend> = Arc::new(MemStorage::new());
+    let cm_storage = storage.clone();
     let index: Arc<dyn IndexBackend> = Arc::new(EmptyIndex);
 
     let raft_node = RaftNode::new(&config, storage.clone(), index.clone())
@@ -166,7 +170,22 @@ async fn make_security_state(opts: SecurityTestOpts) -> AppState {
         snapshot_manager: None,
         document_cache: Arc::new(msearchdb_node::cache::DocumentCache::with_defaults()),
         session_manager: Arc::new(msearchdb_node::session::SessionManager::new()),
-        write_batcher: Arc::new(msearchdb_node::write_batcher::WriteBatcher::new(raft_node)),
+        write_batcher: Arc::new(msearchdb_node::write_batcher::WriteBatcher::new(
+            raft_node.clone(),
+        )),
+        cluster_router: Arc::new(RwLock::new(ClusterRouter::new(vec![], 1))),
+        cluster_manager: Arc::new(ClusterManager::new(
+            NodeInfo {
+                id: config.node_id,
+                address: NodeAddress::new("127.0.0.1", 9300),
+                status: NodeStatus::Follower,
+            },
+            Arc::new(RwLock::new(ClusterRouter::new(vec![], 1))),
+            Arc::new(ConnectionPool::new()),
+            raft_node,
+            cm_storage,
+            1,
+        )),
     }
 }
 

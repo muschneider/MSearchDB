@@ -16,12 +16,15 @@ use tokio::sync::{Mutex, RwLock};
 use tower::ServiceExt;
 
 use msearchdb_consensus::raft_node::RaftNode;
+use msearchdb_core::cluster::{NodeAddress, NodeId, NodeInfo, NodeStatus};
+use msearchdb_core::cluster_router::ClusterRouter;
 use msearchdb_core::config::NodeConfig;
 use msearchdb_core::document::{Document, DocumentId};
 use msearchdb_core::error::{DbError, DbResult};
 use msearchdb_core::query::{Query, SearchResult};
 use msearchdb_core::traits::{IndexBackend, StorageBackend};
 use msearchdb_network::connection_pool::ConnectionPool;
+use msearchdb_node::cluster_manager::ClusterManager;
 use msearchdb_node::state::AppState;
 
 // ---------------------------------------------------------------------------
@@ -195,6 +198,8 @@ async fn make_test_state() -> AppState {
     // Wait briefly for leader election.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
+    let cm_storage = storage.clone();
+
     AppState {
         raft_node: raft_node.clone(),
         storage,
@@ -218,7 +223,22 @@ async fn make_test_state() -> AppState {
         snapshot_manager: None,
         document_cache: Arc::new(msearchdb_node::cache::DocumentCache::with_defaults()),
         session_manager: Arc::new(msearchdb_node::session::SessionManager::new()),
-        write_batcher: Arc::new(msearchdb_node::write_batcher::WriteBatcher::new(raft_node)),
+        write_batcher: Arc::new(msearchdb_node::write_batcher::WriteBatcher::new(
+            raft_node.clone(),
+        )),
+        cluster_router: Arc::new(RwLock::new(ClusterRouter::new(vec![], 1))),
+        cluster_manager: Arc::new(ClusterManager::new(
+            NodeInfo {
+                id: config.node_id,
+                address: NodeAddress::new("127.0.0.1", 9300),
+                status: NodeStatus::Follower,
+            },
+            Arc::new(RwLock::new(ClusterRouter::new(vec![], 1))),
+            Arc::new(ConnectionPool::new()),
+            raft_node,
+            cm_storage,
+            1,
+        )),
     }
 }
 
@@ -960,6 +980,8 @@ async fn make_schema_test_state() -> AppState {
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
+    let cm_storage2 = storage.clone();
+
     AppState {
         raft_node: raft_node.clone(),
         storage,
@@ -983,7 +1005,22 @@ async fn make_schema_test_state() -> AppState {
         snapshot_manager: None,
         document_cache: Arc::new(msearchdb_node::cache::DocumentCache::with_defaults()),
         session_manager: Arc::new(msearchdb_node::session::SessionManager::new()),
-        write_batcher: Arc::new(msearchdb_node::write_batcher::WriteBatcher::new(raft_node)),
+        write_batcher: Arc::new(msearchdb_node::write_batcher::WriteBatcher::new(
+            raft_node.clone(),
+        )),
+        cluster_router: Arc::new(RwLock::new(ClusterRouter::new(vec![], 1))),
+        cluster_manager: Arc::new(ClusterManager::new(
+            NodeInfo {
+                id: config.node_id,
+                address: NodeAddress::new("127.0.0.1", 9300),
+                status: NodeStatus::Follower,
+            },
+            Arc::new(RwLock::new(ClusterRouter::new(vec![], 1))),
+            Arc::new(ConnectionPool::new()),
+            raft_node,
+            cm_storage2,
+            1,
+        )),
     }
 }
 

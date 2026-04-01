@@ -24,6 +24,9 @@ service NodeService {
 
   // Cluster membership: request to join as a learner node.
   rpc JoinCluster(JoinRequest) returns (JoinResponse);
+
+  // Gossip protocol: exchange cluster state views between peers.
+  rpc GossipExchange(GossipMessage) returns (GossipMessage);
 }
 
 // ---------------------------------------------------------------------------
@@ -180,4 +183,15 @@ message ScatterResult {
   bytes scored_document = 1;
   // The originating node id.
   uint64 node_id = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Gossip protocol
+// ---------------------------------------------------------------------------
+
+message GossipMessage {
+  // Serialised cluster view (JSON): HashMap<NodeId, (NodeStatus, u64)>.
+  bytes cluster_view = 1;
+  // The node id of the sender.
+  uint64 sender_id = 2;
 }

@@ -355,6 +355,27 @@ impl NodeClient {
         Ok(())
     }
 
+    /// Exchange gossip messages with a remote node.
+    ///
+    /// Sends this node's cluster view and receives the peer's view in return.
+    pub async fn gossip_exchange(
+        &self,
+        sender_id: u64,
+        cluster_view: Vec<u8>,
+    ) -> DbResult<Vec<u8>> {
+        let mut client = proto::node_service_client::NodeServiceClient::new(self.channel.clone());
+
+        let resp = client
+            .gossip_exchange(proto::GossipMessage {
+                cluster_view,
+                sender_id,
+            })
+            .await
+            .map_err(|e| DbError::NetworkError(format!("gossip_exchange RPC failed: {}", e)))?;
+
+        Ok(resp.into_inner().cluster_view)
+    }
+
     /// Request to join a remote cluster.
     pub async fn join_cluster(&self, node_id: u64, address: &str) -> DbResult<()> {
         let mut client = proto::node_service_client::NodeServiceClient::new(self.channel.clone());
